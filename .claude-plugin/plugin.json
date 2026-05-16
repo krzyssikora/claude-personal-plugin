@@ -1,9 +1,0 @@
-{
-  "name": "claude-personal-plugin",
-  "version": "0.1.0",
-  "description": "Personal Claude Code plugin — currently provides /spec-review for iterative spec review via a fresh-context subagent loop.",
-  "author": {
-    "name": "Krzysztof Sikora",
-    "email": "krzyssikora@gmail.com"
-  }
-}

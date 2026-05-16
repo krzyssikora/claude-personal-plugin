@@ -31,15 +31,19 @@ When an artifact is essentially a verbatim block from the spec (the reviewer pro
 ## File structure
 
 ```
-claude-personal-plugin/
+claude-personal-plugin/                         (repo + Claude Code marketplace root)
 ├── .claude-plugin/
-│   └── plugin.json                     # NEW (Task 1)
-├── commands/
-│   └── spec-review.md                  # NEW (Task 2)
-├── skills/
-│   └── spec-review/
-│       ├── SKILL.md                    # NEW (Task 4)
-│       └── reviewer-prompt.md          # NEW (Task 3)
+│   └── marketplace.json                # NEW (post-implementation fix)
+├── plugins/
+│   └── spec-review/                    # the plugin
+│       ├── .claude-plugin/
+│       │   └── plugin.json             # (Task 1)
+│       ├── commands/
+│       │   └── spec-review.md          # (Task 2)
+│       └── skills/
+│           └── spec-review/
+│               ├── SKILL.md            # (Task 4)
+│               └── reviewer-prompt.md  # (Task 3)
 ├── docs/
 │   └── superpowers/
 │       ├── specs/
@@ -49,6 +53,8 @@ claude-personal-plugin/
 ├── README.md                           # already exists
 └── .gitignore                          # already exists
 ```
+
+**Note:** Tasks 1–4 below describe paths *as the implementer wrote them*. Those paths were `<repo>/.claude-plugin/`, `<repo>/commands/`, `<repo>/skills/spec-review/` at write time. A post-implementation fix moved the plugin into `<repo>/plugins/spec-review/` after Claude Code rejected the bare-root layout. The task content (the file *contents*) is unchanged; only the parent directory moved.
 
 Why this decomposition: each file has one clear responsibility — `plugin.json` declares the plugin to Claude Code, `commands/spec-review.md` is the user-facing entry point, `SKILL.md` is the parent agent's instruction set, `reviewer-prompt.md` is the subagent's instruction set. SKILL.md and `reviewer-prompt.md` are kept separate because the parent loads the latter from disk on every round; if they were merged, the parent would need to re-emit half its own context as the subagent's prompt.
 
@@ -652,7 +658,7 @@ git commit -m "feat(skill): add SKILL.md with parent loop instructions"
 **Files:**
 - Modify: `README.md` (optional small update to reflect installed state)
 
-Claude Code's `/plugin install` works against a **marketplace**, not a raw filesystem path. This repo's `.claude-plugin/marketplace.json` declares itself as a single-plugin marketplace (`name: claude-personal-plugin`) listing one plugin (`name: claude-personal-plugin`, `source: "."`).
+Claude Code's `/plugin install` works against a **marketplace**, not a raw filesystem path. This repo is the marketplace (`claude-personal-plugin`) and contains the plugin (`spec-review`) under `plugins/spec-review/`. The marketplace manifest at `.claude-plugin/marketplace.json` declares one plugin entry with `source: "./plugins/spec-review"`.
 
 - [ ] **Step 1: Register the marketplace**
 
@@ -667,10 +673,10 @@ Expected: Claude Code reports the marketplace was added.
 - [ ] **Step 2: Install the plugin from the marketplace**
 
 ```
-/plugin install claude-personal-plugin@claude-personal-plugin
+/plugin install spec-review@claude-personal-plugin
 ```
 
-(Both names happen to be the same — the first is the plugin name, the second is the marketplace name. The `@` is Claude Code's marketplace syntax.)
+(The plugin name `spec-review` followed by `@` and the marketplace name `claude-personal-plugin`.)
 
 Expected: Claude Code reports the plugin installed successfully and lists the available slash commands and skills (`spec-review` should appear in both).
 

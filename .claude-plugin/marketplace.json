@@ -5,9 +5,9 @@
   },
   "plugins": [
     {
-      "name": "claude-personal-plugin",
-      "source": ".",
-      "description": "Personal Claude Code plugin — currently provides /spec-review for iterative spec review via a fresh-context subagent loop."
+      "name": "spec-review",
+      "source": "./plugins/spec-review",
+      "description": "Iteratively review a spec via a fresh-context reviewer subagent until the loop reaches a clean verdict or a safety cap fires."
     }
   ]
 }

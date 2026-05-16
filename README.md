@@ -11,16 +11,16 @@ user across every project on a given machine. Not fijit-specific.
 
 ## Install
 
-This repo is both the marketplace and the single plugin it contains.
+This repo is a Claude Code marketplace (`claude-personal-plugin`) containing one plugin (`spec-review`) under `plugins/spec-review/`. More plugins may be added later as siblings.
 
 From a Claude Code session:
 
 ```
 /plugin marketplace add C:\Users\krzys\claude-personal-plugin
-/plugin install claude-personal-plugin@claude-personal-plugin
+/plugin install spec-review@claude-personal-plugin
 ```
 
-(First name = plugin; second name = marketplace; they happen to match.)
+(First name = plugin; second name = marketplace.)
 
 To verify: `/plugin` opens the manager and shows the plugin under the
 Installed tab. `/spec-review` should appear in the slash-command palette.
