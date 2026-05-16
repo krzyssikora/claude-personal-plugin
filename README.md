@@ -59,14 +59,19 @@ copy the user-level shortcut into your `~/.claude/commands/`:
 **Windows (PowerShell):**
 
 ```
+New-Item -ItemType Directory -Force -Path $HOME\.claude\commands | Out-Null
 Copy-Item user-commands\spec-review.md $HOME\.claude\commands\spec-review.md
 ```
 
 **Bash / macOS / Linux:**
 
 ```
+mkdir -p ~/.claude/commands
 cp user-commands/spec-review.md ~/.claude/commands/spec-review.md
 ```
+
+(The `~/.claude/commands/` directory is created on demand; if you've
+never installed a user-level slash command before, it won't exist.)
 
 After this, `/spec-review` (un-namespaced) is registered as a user-level
 slash command and forwards `$ARGUMENTS` to the plugin's
