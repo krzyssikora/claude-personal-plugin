@@ -107,8 +107,10 @@ which the parent enforces before calling `Agent`:
 3. The skill instructs the parent agent to:
    1. **Resolve the target spec** (see "Spec discovery" below).
    2. **Emit the resolved absolute spec path** in the parent's
-      assistant-turn response so the user can confirm before any
-      subagent work happens.
+      assistant-turn response so the path appears in the transcript
+      before the first dispatch. The loop does NOT pause for user
+      confirmation — emission is for visibility only; the user can
+      ctrl-c if the resolution is wrong.
    3. Load `reviewer-prompt.md` from the skill directory.
    4. Run the loop (below) until a stop condition fires.
    5. Emit the final report.
@@ -255,16 +257,21 @@ tags into the rendered prompt"`.
 
 Pseudocode for the parent agent's behavior, as instructed by `SKILL.md`.
 List operations use `.append(x)` for a single element and `+= [...]` for
-list extension. Shell-style operations (`git add`, `git commit`) are
-wrapped in helper-function references (`commit_spec(...)`) to remind
-implementers that they need to be invoked as actual tool/shell calls
-with proper quoting.
+list extension. String concatenation with non-string operands (e.g.,
+`"round " + round`) is shorthand for the implementing language's
+natural form (e.g., `f"round {round}"` in Python). Shell-style
+operations are wrapped in helper-function references (`commit_spec`,
+`git_diff_quiet`) to remind implementers that they need to be invoked
+as actual tool/shell calls with proper quoting and `-C <repo>` so they
+target the spec's repository rather than the parent's cwd.
 
 ```
 applied       = []   # list of {severity, brief_description}
 disagreements = []   # list of {catch, reasoning, accepted_but_stale}
-                     # — accepted_but_stale=True flags compelling-
-                     # rebuttal cases that became stale during apply
+                     # accepted_but_stale is reserved for a future bucket
+                     # split; ALWAYS False in v1 (the compelling-rebuttal-
+                     # INVALID_ANCHOR case routes to stale[] instead — see
+                     # Rubrics).
 stale         = []   # list of catch records (full)
 notes         = []   # one-line informational strings; no dedup, no cap
 round         = 1
@@ -272,13 +279,20 @@ MAX_ROUNDS    = 5    # soft cap; illustrative — runtime source: SKILL.md
 HARD_CAP      = 20   # hard cap; illustrative — runtime source: SKILL.md
 
 spec_path = resolve_spec(argument)
+emit_to_user("Resolved spec: " + spec_path)    # before precondition check
 assert_git_preconditions(spec_path)
-emit_to_user("Resolved spec: " + spec_path)
-template = read("skills/spec-review/reviewer-prompt.md")
+repo      = git_toplevel(spec_path)            # cached for later -C calls
+start_sha = git_rev_parse(repo, "HEAD")        # baseline for the
+                                               # final-report Commits range
+template  = read("skills/spec-review/reviewer-prompt.md")
 
 loop:
-  prompt = render_template(template, spec_path, applied, disagreements, stale, round)
-  assert_no_leaked_tags(prompt)
+  prompt = render_template(template, spec_path, applied, disagreements, stale)
+  try:
+    assert_no_leaked_tags(prompt)              # raises TemplateBugError
+  except TemplateBugError as e:
+    report("template-bug", round, applied, disagreements, stale, notes, error=e)
+    exit
 
   try:
     response = Agent.dispatch(general-purpose, prompt)
@@ -313,6 +327,13 @@ loop:
   verdict, catches = parsed     # catches is a list of catch records (see schema)
 
   if verdict == NO_REMAINING_ISSUES:
+    # Verdict trumps catches. If the reviewer somehow emitted catches
+    # alongside a clean verdict, log them by short_id so the discard is
+    # visible — don't act on them.
+    if catches:
+      notes.append("clean verdict accompanied by " + len(catches) +
+                   " catch(es), discarded: " +
+                   ", ".join(c.short_id for c in catches))
     report("clean", round, applied, disagreements, stale, notes)
     exit
 
@@ -345,8 +366,14 @@ loop:
     if catch.is_rebuttal:
       if rebuttal_is_compelling(catch, disagreements):
         # The parent ACCEPTED the rebuttal logically — remove the prior
-        # disagreement up-front, before attempting the edit.
-        remove_matching_disagreement(catch, disagreements)
+        # disagreement up-front, before attempting the edit. If zero
+        # entries match, the rebuttal is still treated as accepted, and
+        # the caller (here) logs a note.
+        removed = remove_matching_disagreement(catch, disagreements)
+        if removed == 0:
+          notes.append("catch " + catch.short_id + ": compelling "
+                       "rebuttal of no current disagreement; treated as "
+                       "a fresh accepted catch")
 
         result = apply_edit(catch, S0)
         if result == OK:
@@ -394,20 +421,20 @@ loop:
     m = len(disagreed_this_round)
     s = len(stale_this_round)
     try:
-      commit_spec(spec_path, round, k, m, s)
-      # commit_spec() runs (with proper path quoting):
-      #   git add "<spec_path>"
-      #   git commit -m "spec(<topic>): round <round> revisions (applied k, disputed m, stale s)"
+      commit_spec(repo, spec_path, round, k, m, s)
+      # commit_spec(repo, spec_path, round, k, m, s) runs (with proper
+      # path quoting) against the spec's repo, not the parent's cwd:
+      #   git -C "<repo>" add "<spec_path>"
+      #   git -C "<repo>" commit -m "spec(<topic>): round <round> revisions (applied k, disputed m, stale s)"
       #
-      # After commit, if the on-disk spec differs from what the parent
-      # wrote (e.g., a pre-commit hook reformatted it), log a note. The
-      # next round's reviewer reads from disk, so the formatter content
-      # becomes the new ground truth — not catastrophic, but worth a
-      # one-line breadcrumb.
-      if read(spec_path) != written_content_this_round:
-        notes.append("round " + round + ": a hook modified the spec "
-                     "during commit; subsequent rounds see the modified "
-                     "content")
+      # After commit, detect a hook that rewrote the spec by comparing
+      # the working tree to the just-made commit. A hook that staged
+      # its rewrite produces a clean diff (no signal needed); a hook
+      # that rewrote without re-staging leaves an unstaged diff.
+      if not git_diff_quiet(repo, "HEAD", spec_path):
+        notes.append("round " + round + ": a commit hook modified the "
+                     "spec but did not re-stage; subsequent rounds "
+                     "read the modified content from disk")
     except CommitFailed as e:
       report("commit-failed", round, applied, disagreements, stale, notes, error=e)
       exit
@@ -464,18 +491,33 @@ loop:
     whats_wrong:           string,        # body of "**What's wrong:** ..."
     address:               string,        # body of "**Address:** ..."
     body_raw:              string,        # everything between heading
-                                          # and next heading, verbatim
+                                          # and next heading, verbatim;
+                                          # for the LAST catch, extends
+                                          # up to (but not including) the
+                                          # verdict line — any trailing
+                                          # prose between the last catch
+                                          # and the verdict is discarded
     is_rebuttal_prefixed:  bool,          # true iff heading carried
                                           # "REBUTTAL: " between short-id
                                           # colon and title
   }
   ```
 
+The loop augments each catch record at decision time with one runtime
+field — `is_rebuttal: bool` — the parent's classification (explicit
+prefix OR overlap-with-a-prior-disagreement). The parser does not
+populate it.
+
 Parser permissiveness rules:
 
 - `### ` headings whose content does not match
   `<SEVERITY>. <short-id>: ...` are ignored (not catches). The parser
   does not error on them.
+- The heading's severity word is authoritative for classification; the
+  short_id letter (`C`/`I`/`M`) is recorded but not cross-checked. A
+  mismatched heading like `### IMPORTANT. M3: ...` parses as IMPORTANT
+  with short_id `M3`. Loop-gating decisions (severity-aware soft cap,
+  Disputed/Stale rendering) use `catch.severity`.
 - Inside an otherwise valid catch heading, the `**Where:**`,
   `**What's wrong:**`, and `**Address:**` lines are tolerated as
   missing — but **at least one of the three must contain non-empty
@@ -518,11 +560,11 @@ the parser returned catches (which is document order). Returns:
   the change site from the catch's descriptive fields; the reviewer
   may have hallucinated or quoted with too much drift.
 
-`brief_description(catch)` → A one-line summary in the spec author's
-own words, ≤ 100 characters, focused on the change applied rather than
-the catch's original phrasing. Example: catch C1 "subagent file access
-undefined" → `"specified subagent reads spec via Read; spec path always
-absolute"`.
+`brief_description(catch)` → A one-line summary in the **parent's**
+voice (not the reviewer's wording), ≤ 100 characters, focused on the
+change applied rather than the catch's original phrasing. Example:
+catch C1 "subagent file access undefined" → `"specified subagent reads
+spec via Read; spec path always absolute"`.
 
 `parent_judges_catch_correct_or_uncertain(catch)` → True when the parent
 either agrees the catch identifies a real gap, or is uncertain whether
@@ -555,14 +597,13 @@ imposed. Returns `False` on an empty `disagreements` list.
 entry `d` from `disagreements` for which `overlaps_any(catch, [d])`
 returns True. Called on the **compelling-rebuttal** branch, before
 `apply_edit`, so the prior disagreement is gone whether or not the
-edit succeeds mechanically. Returns the number of entries removed.
-If zero matched (because the rebuttal flagged a catch with no
-underlying disagreement), the catch is still treated as accepted, and
-a one-line note is added to `notes[]`.
+edit succeeds mechanically. Returns the number of entries removed —
+the caller (not this function) is responsible for noting the
+zero-match case.
 
 ### Report rendering
 
-`report(status, round, applied, disagreements, stale, notes, remaining=None, error=None)`
+`report(status, round, applied, disagreements, stale, notes, error=None)`
 renders the final report to the user via `emit_to_user`. The mapping:
 
 - `Spec:` — the absolute spec path (cached at resolve time).
@@ -578,15 +619,13 @@ renders the final report to the user via `emit_to_user`. The mapping:
   at decision time.
 - `Stale (S):` — bullets from `stale[]`, each as
   `- [<catch.severity>] <catch.title>`, or `(none)` if empty.
-- `Remaining:` — omitted entirely. (Earlier iterations had this
-  section, but with the disjointness invariant it cannot contain new
-  material on cap-hit; round-N catches are already routed to
-  applied/disagreements/stale.)
 - `Notes:` — bullets from `notes[]`, omitted entirely if empty.
-- `Commits:` — bullets from `git log` since the loop started, each as
-  `- <sha> <commit-subject>`, or `(none)` if no commits were made.
-- `Error:` — rendered on `dispatch-error` and `commit-failed` only,
-  as `Error: <repr(error)>`.
+- `Commits:` — bullets from `git -C <repo> log --reverse --format='%h %s' <start_sha>..HEAD -- <spec_path>`,
+  each as `- <sha> <commit-subject>`, or `(none)` if no commits were
+  made. `start_sha` was captured at loop entry; the range is bounded
+  to the spec file so unrelated commits in the repo are excluded.
+- `Error:` — rendered on `dispatch-error`, `commit-failed`, and
+  `template-bug` only, as `Error: <repr(error)>`.
 
 Additional rule: on `commit-failed`, also render a clarifying line
 above `Commits:`:
@@ -633,7 +672,9 @@ on different specs in the same session do not bleed state.
 - `disagreements[]`: records of `{catch, reasoning, accepted_but_stale}`.
   `accepted_but_stale` is reserved for future use; in v1 it is always
   False (the compelling-rebuttal-INVALID_ANCHOR case routes to `stale`
-  instead). Re-sent verbatim each subsequent round.
+  instead). Re-sent each subsequent round in its **current** state —
+  entries removed by compelling rebuttals are gone from the next
+  round's prior-rounds block; everything else is unchanged.
 - `stale[]`: full catch records whose `Edit` returned `STALE` (or
   whose compelling-rebuttal-INVALID_ANCHOR case was routed here).
   Surfaced in the final report AND re-sent to the reviewer in the
@@ -642,6 +683,9 @@ on different specs in the same session do not bleed state.
 - `notes[]`: free-form one-line informational notes. No deduplication;
   no length cap. The `Notes:` section may grow large on pathological
   runs — accepted in v1 (see Out of Scope).
+- `start_sha`: the HEAD commit of the spec's repo captured immediately
+  after `assert_git_preconditions`. Used to bound the final report's
+  `Commits:` listing to commits made within this invocation.
 
 **Bucket disjointness invariant.** Every catch record surfaces in
 exactly one of `applied`, `disagreements`, or `stale`. The invariant
@@ -718,13 +762,17 @@ inspect what would have been committed.
 | `Agent.dispatch` itself raised (transport or platform failure)                                                           | `dispatch-error` |
 | Reviewer response parsed as `MALFORMED` twice in a row (initial + single retry with correction nudge)                    | `malformed`      |
 | `git commit` failed mid-loop                                                                                             | `commit-failed`  |
+| Pre-dispatch leaked-tag assertion failed (parent-side template-substitution bug)                                         | `template-bug`   |
 
 `stuck` and `cap-hit` are treated as successes — the loop has done as
 much as it can productively do. The parent surfaces unresolved items
 so the user can intervene only if they want to.
 
-`hard-cap`, `dispatch-error`, `malformed`, and `commit-failed` are the
-cases that strongly surface for human review.
+`hard-cap`, `dispatch-error`, `malformed`, `commit-failed`, and
+`template-bug` are the cases that strongly surface for human review.
+`template-bug` indicates a parent-side bug (substitution leaked
+`<PRIOR_ROUNDS_BLOCK>` tags into the dispatched prompt); the loop
+reports it so the user gets a usable error rather than a crash.
 
 ## Final report (printed to terminal)
 
@@ -734,7 +782,7 @@ Per-round counts (`k`, `m`, `s`) appear in commit messages.
 
 ```
 Spec:    `<absolute spec path>`
-Status:  `clean` | `stuck` | `cap-hit` | `hard-cap` | `malformed` | `dispatch-error` | `commit-failed`
+Status:  `clean` | `stuck` | `cap-hit` | `hard-cap` | `malformed` | `dispatch-error` | `commit-failed` | `template-bug`
 Rounds:  N
 
 Applied (K = <count>):
@@ -761,7 +809,7 @@ Commits:
   - ...
   (or `(none)`)
 
-Error (only on `dispatch-error` / `commit-failed`):
+Error (only on `dispatch-error` / `commit-failed` / `template-bug`):
   <error repr>
 ```
 
