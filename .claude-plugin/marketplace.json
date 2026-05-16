@@ -1,0 +1,13 @@
+{
+  "name": "claude-personal-plugin",
+  "owner": {
+    "name": "Krzysztof Sikora"
+  },
+  "plugins": [
+    {
+      "name": "claude-personal-plugin",
+      "source": ".",
+      "description": "Personal Claude Code plugin — currently provides /spec-review for iterative spec review via a fresh-context subagent loop."
+    }
+  ]
+}

@@ -652,15 +652,29 @@ git commit -m "feat(skill): add SKILL.md with parent loop instructions"
 **Files:**
 - Modify: `README.md` (optional small update to reflect installed state)
 
-- [ ] **Step 1: Push the plugin to a local Claude Code install**
+Claude Code's `/plugin install` works against a **marketplace**, not a raw filesystem path. This repo's `.claude-plugin/marketplace.json` declares itself as a single-plugin marketplace (`name: claude-personal-plugin`) listing one plugin (`name: claude-personal-plugin`, `source: "."`).
 
-In a Claude Code session (in any project; the plugin install command is global):
+- [ ] **Step 1: Register the marketplace**
+
+In a Claude Code session (any project; the command is global):
 
 ```
-/plugin install C:\Users\krzys\claude-personal-plugin
+/plugin marketplace add C:\Users\krzys\claude-personal-plugin
 ```
+
+Expected: Claude Code reports the marketplace was added.
+
+- [ ] **Step 2: Install the plugin from the marketplace**
+
+```
+/plugin install claude-personal-plugin@claude-personal-plugin
+```
+
+(Both names happen to be the same — the first is the plugin name, the second is the marketplace name. The `@` is Claude Code's marketplace syntax.)
 
 Expected: Claude Code reports the plugin installed successfully and lists the available slash commands and skills (`spec-review` should appear in both).
+
+**Alternative for one-shot smoke testing without a persistent install:** start Claude Code with `claude --plugin-dir "C:\Users\krzys\claude-personal-plugin"`. This loads the plugin only for that session.
 
 - [ ] **Step 2: Confirm `/spec-review` is registered**
 

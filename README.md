@@ -1,18 +1,34 @@
 # claude-personal-plugin
 
-Personal Claude Code plugin — skills, slash commands, and hooks that
-follow the user across every project on a given machine. Not
-fijit-specific.
+Personal Claude Code plugin — skills and slash commands that follow the
+user across every project on a given machine. Not fijit-specific.
 
-## Status
+## Skills
 
-Bootstrapped 2026-05-16 with a single design doc:
-`docs/superpowers/specs/2026-05-16-spec-review-skill-design.md`. No
-runtime code yet — implementation comes from the plan that follows the
-spec.
+- `/spec-review` — iterative spec review via a fresh-context subagent
+  loop. Designed and dogfooded into a tight spec; implemented in v0.1.0.
+  See `docs/superpowers/specs/2026-05-16-spec-review-skill-design.md`.
 
-## Install (once implemented)
+## Install
 
-`/plugin install ./claude-personal-plugin` from Claude Code, with this
-repo cloned locally. Once installed, the slash commands and skills are
-available in every project.
+This repo is both the marketplace and the single plugin it contains.
+
+From a Claude Code session:
+
+```
+/plugin marketplace add C:\Users\krzys\claude-personal-plugin
+/plugin install claude-personal-plugin@claude-personal-plugin
+```
+
+(First name = plugin; second name = marketplace; they happen to match.)
+
+To verify: `/plugin` opens the manager and shows the plugin under the
+Installed tab. `/spec-review` should appear in the slash-command palette.
+
+**One-shot smoke test without persistent install:**
+
+```
+claude --plugin-dir "C:\Users\krzys\claude-personal-plugin"
+```
+
+Loads the plugin only for that Claude Code session.
