@@ -146,8 +146,10 @@ macOS, and Windows).
     error `"spec path must be a file: <path>"`.
 - **No argument.** Discover via
   `Glob(pattern="docs/superpowers/specs/**/*.md")` from the parent's
-  cwd. `Glob` returns paths sorted newest-mtime-first, so the parent
-  takes the first result as the chosen spec. Tie behavior between
+  cwd. Claude Code's `Glob` returns paths "sorted by modification
+  time"; the parent assumes newest-first (verifying on first use is
+  prudent — if the actual order is oldest-first, the parent should
+  reverse the result before taking the first). Tie behavior between
   files with identical mtimes follows whatever `Glob` returns and is
   not separately specified; in practice ties are rare, and users with
   ambiguity-sensitive workflows pass an explicit path. Discovery
@@ -289,7 +291,7 @@ non-empty line of the response (no trailing prose, no code fences):
   sub-list label):
   - Applied: `- [<severity>] <brief_description>`.
   - Disagreed-with: `- [<catch.severity>] <catch.title> — reasoning: <reasoning>`.
-  - Could not be located: `- [<catch.severity>] <prefix><catch.title>; was anchored to: "<catch.where>"; intent: <one-line summary of catch.address or catch.whats_wrong>`,
+  - Could not be located: `- [<catch.severity>] <prefix><catch.title>; was anchored to: "<catch.where>"; intent: <one-line summary of catch.address or catch.whats_wrong>`. Embedded double quotes in `<catch.where>` are passed through verbatim with no escaping; readers tolerate the slight ambiguity, and the bullet's surrounding double quotes are visually distinct enough.
     where `<prefix>` is the literal string `REBUTTAL: ` when
     `catch.is_rebuttal_prefixed` is true and the empty string
     otherwise. Concrete examples:
@@ -586,17 +588,15 @@ loop:
                                           # "" if absent
     address:               string,        # body of "**Address:** ...";
                                           # "" if absent
-    body_raw:              string,        # everything between heading
-                                          # and next heading, verbatim;
-                                          # for the LAST catch, extends
-                                          # up to (but not including) the
-                                          # verdict line — any trailing
-                                          # prose between the last catch
-                                          # and the verdict is discarded
     is_rebuttal_prefixed:  bool,          # true iff heading carried
                                           # "REBUTTAL: " between short-id
                                           # colon and title
   }
+  # (Earlier drafts also carried a body_raw field that captured the
+  # full text between a catch heading and the next heading. No rubric
+  # or report-rendering rule consumes it, so v1 drops it; if future
+  # work needs verbatim catch bodies for debugging or training, add
+  # it back.)
   ```
 
 The loop augments each catch record at decision time with one runtime
@@ -677,6 +677,13 @@ wrong (factually, scope-wise, or rests on a misreading).
   flips: apply only on positive agreement, never on uncertainty. If
   uncertain but the catch can be addressed by adding clarification
   instead of removing content, prefer that path.
+
+  This guard applies only to the non-rebuttal branch. A
+  compelling-rebuttal acceptance is treated as positive agreement by
+  definition (the parent has been convinced by new facts or a logical
+  flaw), so the asymmetric rule is deliberately not consulted there —
+  if the rebuttal's remediation removes content, that's the right
+  outcome.
 
 `rebuttal_is_compelling(catch, disagreements)` → True when the rebuttal
 points to a new fact, new consequence, or a logical flaw in the
@@ -786,6 +793,12 @@ on different specs in the same session do not bleed state.
   block; everything else is unchanged. (An earlier draft also
   carried an `accepted_but_stale` flag for a future bucket split; v1
   routes that case to `stale[]` instead, so the field is omitted.)
+  **Naming note:** this internal bucket is named `disagreements` in
+  state and pseudocode but surfaces externally as `Disputed` in the
+  final report header and `disputed` in commit messages. The
+  divergence is intentional — "disagreements" describes the data,
+  "disputed" reads better in user-facing output — but trace it with
+  this note when grepping.
 - `stale[]`: full catch records whose `Edit` returned `STALE` (or
   whose compelling-rebuttal-INVALID_ANCHOR case was routed here).
   Surfaced in the final report AND re-sent to the reviewer in the
@@ -846,7 +859,10 @@ message via `report("precondition-failed", round=0, applied=[],
 disagreements=[], stale=[], notes=[], error=<message>)`. This routes
 through the same final-report machinery as other failure exits so the
 user gets a consistent UX, with `Rounds: 0` and `(none)` for the
-empty buckets and commit list.
+empty buckets and commit list. The "Resolved spec:" preamble line is
+also emitted before this precondition check fires, so the user
+briefly sees the spec path twice on a precondition failure (once in
+the preamble, once in the report's `Spec:` field) — accepted noise.
 
 On commit failure during the loop (hook rejection, signing failure,
 etc.) the loop stops with the `commit-failed` status. No retries.
