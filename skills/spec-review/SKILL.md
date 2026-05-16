@@ -93,7 +93,7 @@ Repeat until a stop condition fires.
 
 ### Step A — Render the reviewer prompt
 
-1. Read the template at `skills/spec-review/reviewer-prompt.md` (use the `Read` tool with the absolute path to this skill directory).
+1. Read the template at `./reviewer-prompt.md` — Claude Code resolves paths beginning with `./` relative to this skill's installed directory, where `SKILL.md` and `reviewer-prompt.md` live side-by-side.
 
 2. Substitute `<SPEC_PATH>` with the absolute `spec_path`.
 
@@ -178,7 +178,7 @@ For each `catch` in document order:
 - Decide `rebuttal_is_compelling(catch, D0)`: True iff the rebuttal points to a NEW fact, a NEW consequence, or a logical flaw in the disagreement's reasoning — not merely re-asserting the original concern. Evaluate against the round-start snapshot `D0` so sibling rebuttals earlier in the same round don't poison the check.
 
 - **Compelling:**
-  - Remove every entry from `disagreements` (mutating the live list, not D0) for which `overlaps_any(catch, [d])` is True. Capture `removed_count`. If `removed_count == 0`, append to `notes`: `catch <short_id>: compelling rebuttal of no current disagreement; treated as a fresh accepted catch`.
+  - Call `remove_matching_disagreement(catch, disagreements)` — i.e., remove every entry from `disagreements` (mutating the live list, not D0) for which `overlaps_any(catch, [d])` is True. Capture `removed_count`. If `removed_count == 0`, append to `notes`: `catch <short_id>: compelling rebuttal of no current disagreement; treated as a fresh accepted catch`.
   - Call `apply_edit(catch, S0)` (see below). Branch on result:
     - `OK` → `applied_this_round.append({severity: catch.severity, brief_description: brief_description(catch)})`.
     - `STALE` → `stale_this_round.append(catch)`.
@@ -298,6 +298,9 @@ Commits:
 Error (only when Status is one of: dispatch-error, commit-failed, template-bug, precondition-failed, resolve-failed):
   <error message>
 ```
+
+Field explanations:
+- `Rounds:` — the integer `round` argument. For `clean` and `stuck` exits, this is the current `round` (un-incremented, equal to the round whose work was just observed). For `cap-hit` and `hard-cap` exits, the loop passes `round - 1` because `round` was incremented in Step J before the cap check, and the user's mental model is "the last round that ran" not "the round we never started."
 
 Render the `Commits:` section by running `git -C "<repo>" log --reverse --format='%h %s' <start_sha>..HEAD -- "<spec_path>"` and taking each output line as a bullet. If the command returns no lines, render `(none)`.
 
