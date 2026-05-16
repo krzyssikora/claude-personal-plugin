@@ -3,6 +3,6 @@ description: Iteratively review a spec via a fresh-context reviewer subagent unt
 argument-hint: "[path-to-spec.md]"
 ---
 
-Invoke the `spec-review:spec-review` skill via the Skill tool. (The plugin and the skill happen to share the same name, hence the doubled form — `<plugin-name>:<skill-name>`. Without the namespace prefix the Skill tool cannot resolve a plugin skill, so a bare `spec-review` will fail to load.)
+Invoke the `spec-review:spec-review` skill via the Skill tool. The skill lives in the `spec-review` plugin (installed via `/plugin install spec-review@claude-personal-plugin`); this user-level slash command is a typing-shortcut so you can run `/spec-review` instead of `/spec-review:spec-review`.
 
 Forward `$ARGUMENTS` verbatim to the skill as its `spec` argument — no tokenization, no quoting. The skill handles empty-argument discovery and validation.
