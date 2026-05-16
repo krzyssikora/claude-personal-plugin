@@ -48,7 +48,7 @@ new subagent dispatched per round.
 | Entry point             | Slash command `/spec-review [path]` that invokes the skill; skill is also invocable via Skill tool.   |
 | Inter-round persistence | Lives in the parent agent's conversation context, not on disk. Per-invocation scope.                  |
 | Per-round commit        | Yes — each round that applies catches creates one git commit, so `git log` is the trail.              |
-| Safety cap              | `MAX_ROUNDS = 5`. Not configurable in v1; edit the constant in `SKILL.md` to change.                  |
+| Safety cap              | `MAX_ROUNDS = 5`. Not configurable in v1; runtime value lives in `SKILL.md`.                          |
 
 ## Plugin layout
 
@@ -88,8 +88,13 @@ which the parent enforces before calling `Agent`:
   says on disk" between rounds.
 - **`<SPEC_PATH>` is always an absolute path.** The parent resolves the
   spec to an absolute path before substitution. A relative path in the
-  prompt is a bug.
-- **Tools the subagent needs:** `Read` (to fetch the spec).
+  prompt is a bug. On Windows the path uses the native form (drive
+  letter and backslashes); `Read` accepts either slash style, so the
+  parent does not normalize.
+- **Tools the subagent needs:** `Read` (to fetch the spec). The
+  `general-purpose` subagent type already has `Read` among its default
+  tools; the `Agent` tool does not accept a per-call tool allowlist, so
+  the dispatch passes no tool-restriction argument.
 
 ## Invocation flow
 
@@ -117,7 +122,10 @@ which the parent enforces before calling `Agent`:
     `"spec path must be a file: <path>"`.
 - **No argument.** Recursively find `*.md` files under
   `<cwd>/docs/superpowers/specs/`, follow symlinks to files but not
-  directories, and pick the one with the newest mtime. Errors:
+  directories, and pick the one with the newest mtime. On mtime ties,
+  pick the lexicographically largest filename; under the
+  `YYYY-MM-DD-<slug>.md` convention this picks the most recently dated
+  spec, and beyond that the longest-/last-alphabetical slug. Errors:
   - directory missing → `"no specs directory at <cwd>/docs/superpowers/specs/; pass a path explicitly"`.
   - directory exists but contains no `*.md` → `"no specs found under <cwd>/docs/superpowers/specs/; pass a path explicitly"`.
 
@@ -177,8 +185,13 @@ In prior rounds:
   - <item> — author said: <reasoning>
   - ...
 Do not re-raise disagreed items unless the author's reasoning has a
-real flaw you can articulate. If you re-raise one, your entry MUST
-start its title with "REBUTTAL: " and explain the flaw in their
+real flaw you can articulate. If you re-raise one, the entry's heading
+MUST have the form
+
+  ### <SEVERITY>. <short-id>: REBUTTAL: <one-line title>
+
+(i.e. the literal "REBUTTAL: " token appears between the short-id colon
+and the title), and the body must explain the flaw in the author's
 reasoning, not just re-assert the original concern.
 </PRIOR_ROUNDS_BLOCK>
 
@@ -206,6 +219,8 @@ Pseudocode for the parent agent's behavior, as instructed by `SKILL.md`:
 ```
 applied       = []   # brief descriptions, persist across rounds
 disagreements = []   # {catch, parent's reasoning} pairs, persist across rounds
+stale         = []   # catches whose Edit failed because the anchor was
+                     # already changed by an earlier catch this round
 round         = 1
 MAX_ROUNDS    = 5
 
@@ -215,15 +230,17 @@ template  = read("skills/spec-review/reviewer-prompt.md")
 
 loop:
   prompt   = render_template(template, spec_path, applied, disagreements, round)
-  response = Agent.dispatch(general-purpose, prompt, tools=[Read])
-
+  response = Agent.dispatch(general-purpose, prompt)
   parsed   = parse(response)
+
+  # Single retry on malformed output, with a correction nudge.
   if parsed == MALFORMED:
-    # one retry with a correction nudge appended to the prompt
-    if not already_retried_this_round:
-      already_retried_this_round = True
-      retry
-    else:
+    nudged   = prompt + "\n\nYour previous response did not match the " \
+                        "required format. Re-emit your review in the "  \
+                        "exact format described above."
+    response = Agent.dispatch(general-purpose, nudged)
+    parsed   = parse(response)
+    if parsed == MALFORMED:
       report("malformed", round, applied, disagreements)
       exit
 
@@ -233,61 +250,84 @@ loop:
     report("clean", round, applied, disagreements)
     exit
 
-  # Normalize: a catch overlaps a prior disagreement if its title or
-  # body substantially restates that disagreement, regardless of whether
-  # the reviewer used the "REBUTTAL: " prefix. Treat overlaps as
-  # rebuttals.
+  # Normalize: a catch is treated as a rebuttal if its title carries the
+  # explicit "REBUTTAL: " prefix OR its title/body substantially restates
+  # any prior disagreement. Round-1 catches always overlap an empty list
+  # and so are never rebuttals — a stray "REBUTTAL: " prefix on round 1
+  # is therefore stripped silently and the catch is processed as new.
   for catch in catches:
-    catch.is_rebuttal = catch.title.startswith("REBUTTAL: ") \
+    catch.is_rebuttal = (catch.title.startswith("REBUTTAL: ")
+                         and disagreements != []) \
                         or overlaps_any(catch, disagreements)
 
   # Decide per catch.
   applied_this_round   = []
   disagreed_this_round = []
+  stale_this_round     = []
+
   for catch in catches:
     if catch.is_rebuttal:
       if rebuttal_is_compelling(catch, disagreements):
-        edit spec to address it
-        applied_this_round += brief_description(catch)
-        remove_matching_disagreement(catch, disagreements)
+        result = apply_edit(catch)
+        if result == OK:
+          applied_this_round += brief_description(catch)
+          remove_matching_disagreement(catch, disagreements)
+        else:  # STALE
+          stale_this_round += catch
       else:
         # weak rebuttal — keep the existing disagreement, do not re-add
         pass
     else:
       if parent_judges_catch_correct_or_uncertain(catch):
-        edit spec to address it
-        applied_this_round += brief_description(catch)
+        result = apply_edit(catch)
+        if result == OK:
+          applied_this_round += brief_description(catch)
+        else:  # STALE
+          stale_this_round += catch
       else:
         disagreed_this_round += {catch, parent's reasoning}
 
   applied       += applied_this_round
   disagreements += disagreed_this_round
+  stale         += stale_this_round
 
   # Commit BEFORE the stuck check so a stuck-exit never leaves applied
   # edits uncommitted.
   if applied_this_round:
     try:
       git add <spec_path>
-      git commit -m "spec(<topic>): round <round> revisions (applied K, disputed M)"
+      git commit -m "spec(<topic>): round <round> revisions " \
+                  "(applied K, disputed M, stale S)"
     except CommitFailed as e:
-      report("commit-failed", round, applied, disagreements, error=e)
+      report("commit-failed", round, applied, disagreements, stale, error=e)
       exit
 
   # Stuck detector: every catch this round was a rebuttal and none were
   # compelling — applied_this_round is empty AND every catch was a
-  # rebuttal.
+  # rebuttal. Stale catches do not block stuck (they were rebuttals that
+  # the parent agreed with but couldn't apply mechanically).
   if catches and applied_this_round == [] \
      and all(catch.is_rebuttal for catch in catches):
-    report("stuck", round, applied, disagreements)
+    report("stuck", round, applied, disagreements, stale)
     exit
 
   round += 1
   if round > MAX_ROUNDS:
-    report("cap-hit", round - 1, applied, disagreements, remaining=catches)
+    report("cap-hit", round - 1, applied, disagreements, stale, remaining=catches)
     exit
 ```
 
 ### Rubrics
+
+`apply_edit(catch)` → Uses `Edit` (or `Write` for whole-section
+rewrites) to modify the spec to address `catch`. Edits within a round
+are applied sequentially in the order the reviewer listed the catches.
+Returns `OK` on success, `STALE` if the `Edit` fails because the anchor
+text has already been modified by a prior catch in this round. `STALE`
+catches are not added to `applied[]` or `disagreements[]`; they go to
+`stale[]` and are surfaced in the final report so the author can
+re-address them on the next round (where the reviewer is likely to
+re-raise them) or by hand.
 
 `brief_description(catch)` → A one-line summary in the spec author's
 own words, ≤ 100 characters, focused on the change applied rather than
@@ -303,12 +343,22 @@ wrong (factually, scope-wise, or rests on a misreading).
 `rebuttal_is_compelling(catch, disagreements)` → True when the rebuttal
 points to a new fact, new consequence, or a logical flaw in the
 disagreement's reasoning. Re-asserting the original concern in stronger
-language is NOT compelling.
+language is NOT compelling. Returns `False` if `disagreements` is empty
+(degenerate case; a round-1 catch with a stray `REBUTTAL: ` prefix has
+already been stripped to a normal catch upstream, so this branch is
+defensive).
 
 `overlaps_any(catch, disagreements)` → True when the catch's title or
 body substantially restates any disagreement. The parent makes this
 judgment by reading both texts; no string-similarity threshold is
-imposed.
+imposed. Returns `False` on an empty `disagreements` list.
+
+`remove_matching_disagreement(catch, disagreements)` → Removes every
+entry `d` from `disagreements` for which `overlaps_any(catch, [d])`
+returns True. If zero entries are removed (because the rebuttal flagged
+a catch without an underlying disagreement), the catch is treated as a
+normal new catch on this round and a one-line note is logged for the
+final report.
 
 ### `<topic>` derivation for commit messages
 
@@ -328,15 +378,18 @@ discipline of triaging is itself a useful prompt for finding issues.
 
 ### State across rounds
 
-Two lists, both held in the parent agent's conversation context for the
-duration of one `/spec-review` invocation only. Re-initialized to empty
-at the start of every invocation, so two consecutive invocations on
-different specs in the same session do not bleed state.
+Three lists, all held in the parent agent's conversation context for
+the duration of one `/spec-review` invocation only. Re-initialized to
+empty at the start of every invocation, so two consecutive invocations
+on different specs in the same session do not bleed state.
 
 - `applied[]`: short bullets describing what was changed and why.
 - `disagreements[]`: each entry is `{catch, parent's reasoning}`.
   Re-sent verbatim each subsequent round so the reviewer cannot quietly
   re-raise the same item without acknowledging the prior reasoning.
+- `stale[]`: catches whose `Edit` failed because the anchor was already
+  changed by an earlier catch in the same round. Surfaced in the final
+  report; not re-sent to the reviewer (they'll likely re-raise organically).
 
 Nothing is persisted to disk between rounds besides the spec edits
 themselves and the per-round commits.
@@ -382,13 +435,15 @@ The parent treats the response as parseable iff:
 
 - The last non-empty line, after trimming whitespace, equals exactly
   `VERDICT: NO_REMAINING_ISSUES` or `VERDICT: ISSUES_REMAIN`.
-- Every catch is delimited by a `### ` heading whose first token after
-  the space is `CRITICAL.`, `IMPORTANT.`, or `MINOR.` (severity-tier
-  marker), allowing for the `REBUTTAL: ` prefix in the title text after
-  the short-id.
+- Every catch is delimited by a `### ` heading of the form
+  `### <SEVERITY>. <short-id>: [REBUTTAL: ]<title>`, where `<SEVERITY>`
+  is `CRITICAL`, `IMPORTANT`, or `MINOR` (the literal severity tier
+  followed by a period), `<short-id>` matches `[CIM]\d+`, and the
+  `REBUTTAL: ` prefix on `<title>` is optional. Example with rebuttal:
+  `### IMPORTANT. I9: REBUTTAL: memory bloat is unbounded in practice`.
 
 If either condition fails, the response is `MALFORMED`, triggering one
-retry with a correction nudge appended to the prompt:
+retry with the correction nudge appended to the prompt:
 `"Your previous response did not match the required format. Re-emit
 your review in the exact format described above."`
 
@@ -399,11 +454,17 @@ Spec:    `docs/superpowers/specs/2026-05-16-spec-review-skill-design.md`
 Status:  `clean` | `stuck` | `cap-hit` | `malformed` | `commit-failed`
 Rounds:  N
 Applied (K):
+  - [CRITICAL] `<brief description>`
+  - [IMPORTANT] `<brief description>`
   - ...
 Disputed (M):
-  - `<catch>` — reasoning: `<parent's reasoning>`
+  - [MINOR] `<catch title>` — reasoning: `<parent's reasoning>`
+  - ...
+Stale (S, only if any edits failed due to a prior catch's edit):
+  - [IMPORTANT] `<catch title>`
   - ...
 Remaining (only if cap-hit):
+  - [CRITICAL] `<catch title>`
   - ...
 Commits:
   - `<sha>` spec(`<topic>`): round 1 revisions ...
@@ -438,8 +499,10 @@ reviewer behavior is stochastic. The expected outcomes are qualitative.
   across Claude Code restarts.
 - Cross-project shared review history.
 - A non-Claude-Code variant (e.g., for raw API or other clients).
-- Runtime configurability of `MAX_ROUNDS` (edit the constant in
-  `SKILL.md` if you want to change it in v1).
+- Runtime configurability of `MAX_ROUNDS`. The runtime value lives in
+  `SKILL.md`; references in this design doc (decision table and
+  pseudocode) are informational and do not auto-update if you change
+  SKILL.md.
 - Disagreement-memory bloat mitigation. At a 5-round cap with terse
   disagreement entries, total context overhead is bounded at hundreds
   of tokens. Revisit only if real use surfaces friction.
