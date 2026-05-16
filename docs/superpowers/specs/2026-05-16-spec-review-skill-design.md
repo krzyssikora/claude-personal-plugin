@@ -260,17 +260,21 @@ non-empty line of the response (no trailing prose, no code fences):
 - **Sub-list bullet formats** (round 2+):
   - Applied: `- [<severity>] <brief_description>`.
   - Disagreed-with: `- [<catch.severity>] <catch.title> — reasoning: <reasoning>`.
-  - Could not be located: `- [<catch.severity>] <catch.title>; was anchored to: "<catch.where>"; intent: <one-line summary of catch.address or catch.whats_wrong>`.
+  - Could not be located: `- [<catch.severity>] [<REBUTTAL: prefix if catch.is_rebuttal_prefixed>]<catch.title>; was anchored to: "<catch.where>"; intent: <one-line summary of catch.address or catch.whats_wrong>`. The `REBUTTAL: ` prefix is re-attached when the original catch carried it, so the reviewer sees the full rebuttal lineage rather than the stripped title.
   These mirror (and intentionally overlap with) the final-report
   rendering rules so the reviewer sees the same information the user
   will see.
 - `<SPEC_PATH>` is always replaced with the absolute spec path.
 
 **Pre-dispatch sanity assertion:** after substitution, the parent
-asserts the rendered prompt contains neither the literal token
-`<PRIOR_ROUNDS_BLOCK>` nor `</PRIOR_ROUNDS_BLOCK>`. A failed assertion
-is a parent-side bug; abort with `"template substitution leaked block
-tags into the rendered prompt"`.
+asserts the rendered prompt contains none of the literal tokens
+`<PRIOR_ROUNDS_BLOCK>`, `</PRIOR_ROUNDS_BLOCK>`, or `<SPEC_PATH>`. A
+failed assertion is a parent-side bug; abort with `"template
+substitution leaked block tags or the <SPEC_PATH> placeholder into the
+rendered prompt"`. Without the `<SPEC_PATH>` check, a substitution
+miss would silently send a prompt that tells the subagent to `Read` a
+file literally named `<SPEC_PATH>`, wasting a dispatch and producing
+a MALFORMED retry instead of a clean `template-bug` exit.
 
 ## The parent loop algorithm
 
@@ -293,9 +297,25 @@ round         = 1
 MAX_ROUNDS    = 5    # soft cap; illustrative — runtime source: SKILL.md
 HARD_CAP      = 20   # hard cap; illustrative — runtime source: SKILL.md
 
-spec_path = resolve_spec(argument)
-emit_to_user("Resolved spec: " + spec_path)    # before precondition check
-assert_git_preconditions(spec_path)
+try:
+  spec_path = resolve_spec(argument)
+except SpecResolutionError as e:
+  # Route through report() with empty buckets for UX consistency with
+  # other failure exits (precondition-failed, template-bug, etc.).
+  report("resolve-failed", round=0, applied=[], disagreements=[],
+         stale=[], notes=[], error=e)
+  exit
+
+emit_to_user("Resolved spec: `" + spec_path + "`")   # backtick-wrapped
+                                                      # per Invocation flow
+try:
+  assert_git_preconditions(spec_path)
+except PreconditionAborted as e:
+  report("precondition-failed", round=0, applied=[], disagreements=[],
+         stale=[], notes=[], error=e)
+  exit
+
+topic = derive_topic(spec_path)                       # see <topic> derivation
 repo      = git_toplevel(spec_path)            # cached for later -C calls
 start_sha = git_rev_parse(repo, "HEAD")        # baseline for the
                                                # final-report Commits range
@@ -352,22 +372,23 @@ loop:
     report("clean", round, applied, disagreements, stale, notes)
     exit
 
-  # Note any round-1 stray REBUTTAL: prefixes and any implicit
-  # (overlap-based) rebuttal classifications. The parser already stripped
-  # the REBUTTAL: prefix from catch.title and set is_rebuttal_prefixed.
+  # Note stray REBUTTAL: prefixes that target nothing (no current
+  # disagreements; common but not exclusive to round 1 — also fires
+  # when prior compelling rebuttals removed every disagreement). The
+  # parser already stripped the REBUTTAL: prefix from catch.title and
+  # set is_rebuttal_prefixed.
+  #
+  # Implicit-rebuttal classification (overlap-based, no explicit prefix)
+  # is logged only AFTER compellingness is decided, to avoid emitting
+  # two notes for one weak-rebuttal catch.
   for catch in catches:
     if catch.is_rebuttal_prefixed and disagreements == []:
       notes.append("catch " + catch.short_id + ": REBUTTAL: prefix "
-                   "appeared with no prior disagreements; treated as "
+                   "appeared with no current disagreements; treated as "
                    "a new catch")
 
     catch.is_rebuttal = (catch.is_rebuttal_prefixed and disagreements != []) \
                         or overlaps_any(catch, disagreements)
-
-    if catch.is_rebuttal and not catch.is_rebuttal_prefixed:
-      notes.append("catch " + catch.short_id + ": classified as "
-                   "implicit rebuttal of a prior disagreement based on "
-                   "overlap; the parent's judgment, not the reviewer's")
 
   # Snapshot the spec AND the disagreements list at the start of the
   # round. S0 anchors STALE vs INVALID_ANCHOR. D0 anchors rebuttal
@@ -409,14 +430,18 @@ loop:
           notes.append("catch " + catch.short_id + ": compelling "
                        "rebuttal but anchor not located; routed to stale")
       else:
-        # Weak rebuttal — the disagreement (or its round-start state in
-        # D0) already surfaces this issue. Log a note so the round's
-        # outcome stays legible. NB: by checking D0, the message is
-        # accurate even if a sibling rebuttal earlier this round
-        # removed the matching disagreement.
-        notes.append("round " + round + ": rebuttal " + catch.short_id +
-                     " was not compelling against the disagreement(s) "
-                     "it targeted (D0 snapshot)")
+        # Weak rebuttal — the disagreement (in its D0 form) already
+        # surfaces this issue. Log a single combined note that also
+        # records implicit classification (if applicable) so the user
+        # sees one entry per catch instead of two.
+        if catch.is_rebuttal_prefixed:
+          notes.append("round " + round + ": rebuttal " +
+                       catch.short_id + " (explicit prefix) was not "
+                       "compelling against the D0 disagreement(s)")
+        else:
+          notes.append("round " + round + ": catch " + catch.short_id +
+                       " classified as implicit rebuttal by overlap; "
+                       "judged non-compelling against D0 and dropped")
     else:
       if parent_judges_catch_correct_or_uncertain(catch):
         result = apply_edit(catch, S0)
@@ -520,9 +545,12 @@ loop:
     severity:              "CRITICAL" | "IMPORTANT" | "MINOR",
     short_id:              "C1" | "I3" | "M2" | ...,    # matches [CIM]\d+
     title:                 string,        # REBUTTAL: prefix removed by parser
-    where:                 string,        # body of "**Where:** ..." line
-    whats_wrong:           string,        # body of "**What's wrong:** ..."
-    address:               string,        # body of "**Address:** ..."
+    where:                 string,        # body of "**Where:** ..." line;
+                                          # "" if the line was absent
+    whats_wrong:           string,        # body of "**What's wrong:** ...";
+                                          # "" if absent
+    address:               string,        # body of "**Address:** ...";
+                                          # "" if absent
     body_raw:              string,        # everything between heading
                                           # and next heading, verbatim;
                                           # for the LAST catch, extends
@@ -674,13 +702,17 @@ Applied (K) count includes them, but git log does not.
 
 ### `<topic>` derivation for commit messages
 
-The slug used in `spec(<topic>): ...` is the spec filename stem with
-any leading `YYYY-MM-DD-` prefix stripped, then **normalized** to be
-safe for conventional-commits scopes: lowercased, runs of
-non-alphanumeric characters collapsed to a single hyphen, leading and
-trailing hyphens trimmed. Example:
-`2026-05-16-spec-review-skill-design.md` → topic `spec-review-skill-design`.
-`Feature Plan v2.md` → topic `feature-plan-v2`.
+`derive_topic(spec_path)`: the spec filename stem with any leading
+`YYYY-MM-DD-` prefix stripped, then **normalized** to be safe for
+conventional-commits scopes: lowercased, runs of non-alphanumeric
+characters collapsed to a single hyphen, leading and trailing hyphens
+trimmed. If the result is empty (e.g., the spec was named
+`2026-05-16.md` with no slug), `derive_topic` falls back to the
+un-stripped, normalized stem (so `2026-05-16.md` → topic `2026-05-16`).
+Examples:
+- `2026-05-16-spec-review-skill-design.md` → `spec-review-skill-design`.
+- `Feature Plan v2.md` → `feature-plan-v2`.
+- `2026-05-16.md` → `2026-05-16` (fallback path).
 
 ### Severity tiers
 
@@ -811,15 +843,17 @@ inspect what would have been committed.
 | `git commit` failed mid-loop                                                                                             | `commit-failed`  |
 | Pre-dispatch leaked-tag assertion failed (parent-side template-substitution bug)                                         | `template-bug`   |
 | `assert_git_preconditions` aborted before the loop started                                                               | `precondition-failed` |
+| `resolve_spec` aborted because the spec couldn't be located or validated                                                 | `resolve-failed`      |
 
 `stuck` and `cap-hit` are treated as successes — the loop has done as
 much as it can productively do. The parent surfaces unresolved items
 so the user can intervene only if they want to.
 
-`hard-cap`, `dispatch-error`, `malformed`, `commit-failed`, and
-`template-bug` are the cases that strongly surface for human review.
-`template-bug` indicates a parent-side bug (substitution leaked
-`<PRIOR_ROUNDS_BLOCK>` tags into the dispatched prompt); the loop
+`hard-cap`, `dispatch-error`, `malformed`, `commit-failed`,
+`template-bug`, `precondition-failed`, and `resolve-failed` are the
+cases that strongly surface for human review. `template-bug`
+indicates a parent-side bug (substitution leaked block tags or the
+`<SPEC_PATH>` placeholder into the dispatched prompt); the loop
 reports it so the user gets a usable error rather than a crash.
 
 ## Final report (printed to terminal)
@@ -830,22 +864,22 @@ Per-round counts (`k`, `m`, `s`) appear in commit messages.
 
 ```
 Spec:    `<absolute spec path>`
-Status:  `clean` | `stuck` | `cap-hit` | `hard-cap` | `malformed` | `dispatch-error` | `commit-failed` | `template-bug` | `precondition-failed`
+Status:  `clean` | `stuck` | `cap-hit` | `hard-cap` | `malformed` | `dispatch-error` | `commit-failed` | `template-bug` | `precondition-failed` | `resolve-failed`
 Rounds:  N
 
 Applied (K = <count>):
-  - [CRITICAL] `<brief description>`
-  - [IMPORTANT] `<brief description>`
+  - [CRITICAL] <brief description>
+  - [IMPORTANT] <brief description>
   - ...
   (or `(none)` when K = 0)
 
 Disputed (M = <count>):
-  - [MINOR] `<catch title>` — reasoning: `<parent's reasoning>`
+  - [MINOR] <catch title> — reasoning: <parent's reasoning>
   - ...
   (or `(none)` when M = 0)
 
 Stale (S = <count>):
-  - [IMPORTANT] `<catch title>`
+  - [IMPORTANT] <catch title>
   - ...
   (or `(none)` when S = 0)
 
