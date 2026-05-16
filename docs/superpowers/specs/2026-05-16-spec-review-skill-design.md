@@ -146,12 +146,14 @@ macOS, and Windows).
     error `"spec path must be a file: <path>"`.
 - **No argument.** Discover via
   `Glob(pattern="docs/superpowers/specs/**/*.md")` from the parent's
-  cwd, then pick the file with the newest mtime. On mtime ties, pick
-  the lexicographically largest path — a stable fallback that typically
-  picks the most-recently-dated spec under the `YYYY-MM-DD-<slug>.md`
-  convention. Discovery does NOT walk upward to a git root; if the
-  user is in a subdirectory of a repo whose specs live at the repo
-  root, they must pass an explicit path. Errors:
+  cwd. `Glob` returns paths sorted newest-mtime-first, so the parent
+  takes the first result as the chosen spec. Tie behavior between
+  files with identical mtimes follows whatever `Glob` returns and is
+  not separately specified; in practice ties are rare, and users with
+  ambiguity-sensitive workflows pass an explicit path. Discovery
+  does NOT walk upward to a git root; if the user is in a subdirectory
+  of a repo whose specs live at the repo root, they must pass an
+  explicit path. Errors:
   - the `Glob` call returns zero results → error
     `"no specs found under <cwd>/docs/superpowers/specs/; pass a path explicitly"`.
 
@@ -212,9 +214,14 @@ must contain non-empty content. A heading with no body is not a catch.
 
 Use sequential short-ids per severity (C1, C2, ...; I1, I2, ...; M1, M2,
 ...). Do not nest catches; do not combine multiple issues into one item.
-You may use H3 (`### `) headings ONLY for catch headings — the parent's
-parser ignores non-matching H3s without error, but emitting them is
-discouraged.
+
+H3 (`### `) headings are reserved for catch headings. If you need to
+structure your response with other section headers (a summary header,
+a closing paragraph), use H2 (`## `) headings or plain prose. The
+parent's parser ignores non-matching H3s without error, but emitting
+them risks confusing readers — and emitting ONLY non-matching H3s
+alongside `VERDICT: ISSUES_REMAIN` is treated as a malformed response
+because there are zero parseable catches.
 
 <PRIOR_ROUNDS_BLOCK>
 In prior rounds:
@@ -255,12 +262,39 @@ non-empty line of the response (no trailing prose, no code fences):
   included) with the rendered prior-rounds content. The blank line
   immediately AFTER `</PRIOR_ROUNDS_BLOCK>` is preserved so the
   rendered content is visually separated from the "End your response
-  with..." instruction. Empty sub-lists are rendered as `(none)` so
-  the structure is recognizable even when one side has nothing.
-- **Sub-list bullet formats** (round 2+):
+  with..." instruction. (Round 1 strips that trailing blank because
+  nothing is rendered in its place; round 2+ preserves it as the
+  visual separator — same line, opposite treatment, different cases.)
+  Empty sub-lists are rendered as `(none)` so the structure is
+  recognizable even when one side has nothing.
+- **Rendered-block scaffolding** (round 2+): the parent regenerates
+  the full block content — not just the bullet lists. The literal
+  scaffolding the parent emits, in order, is:
+
+  ```
+  In prior rounds:
+  - Applied:
+    <bullets, or "(none)">
+  - Disagreed-with by the spec author, with their reasoning:
+    <bullets, or "(none)">
+  - Could not be located in the current spec (the parent could not
+    mechanically apply these earlier; you may re-raise with a fresh
+    anchor quote if they still apply):
+    <bullets, or "(none)">
+  ```
+
+  No delimiter tokens appear in the rendered output — only the
+  scaffolding above plus rendered bullets.
+- **Sub-list bullet formats** (round 2+, two-space-indented under each
+  sub-list label):
   - Applied: `- [<severity>] <brief_description>`.
   - Disagreed-with: `- [<catch.severity>] <catch.title> — reasoning: <reasoning>`.
-  - Could not be located: `- [<catch.severity>] [<REBUTTAL: prefix if catch.is_rebuttal_prefixed>]<catch.title>; was anchored to: "<catch.where>"; intent: <one-line summary of catch.address or catch.whats_wrong>`. The `REBUTTAL: ` prefix is re-attached when the original catch carried it, so the reviewer sees the full rebuttal lineage rather than the stripped title.
+  - Could not be located: `- [<catch.severity>] <prefix><catch.title>; was anchored to: "<catch.where>"; intent: <one-line summary of catch.address or catch.whats_wrong>`,
+    where `<prefix>` is the literal string `REBUTTAL: ` when
+    `catch.is_rebuttal_prefixed` is true and the empty string
+    otherwise. Concrete examples:
+    - non-rebuttal stale: `- [IMPORTANT] commit_spec missing -C flag; was anchored to: "git add \\"<spec_path>\\""; intent: scope git ops to the spec's repo`
+    - rebuttal stale: `- [IMPORTANT] REBUTTAL: memory bloat is unbounded in practice; was anchored to: "..."; intent: ...`
   These mirror (and intentionally overlap with) the final-report
   rendering rules so the reviewer sees the same information the user
   will see.
@@ -455,7 +489,7 @@ loop:
             {catch, reasoning: "could not locate the anchor cited by "
                                "the reviewer; treating as could-not-address"})
       else:
-        disagreed_this_round.append({catch, parent's reasoning})
+        disagreed_this_round.append({catch, reasoning: <parent's reasoning>})
 
   applied       += applied_this_round
   disagreements += disagreed_this_round
@@ -468,11 +502,12 @@ loop:
     m = len(disagreed_this_round)
     s = len(stale_this_round)
     try:
-      commit_spec(repo, spec_path, round, k, m, s)
-      # commit_spec(repo, spec_path, round, k, m, s) runs (with proper
-      # path quoting) against the spec's repo, not the parent's cwd:
+      commit_spec(repo, spec_path, topic, round, k, m, s)
+      # commit_spec(repo, spec_path, topic, round, k, m, s) runs (with
+      # proper path quoting) against the spec's repo, not the parent's
+      # cwd. All bracketed names below are interpolations:
       #   git -C "<repo>" add "<spec_path>"
-      #   git -C "<repo>" commit -m "spec(<topic>): round <round> revisions (applied k, disputed m, stale s)"
+      #   git -C "<repo>" commit -m "spec(<topic>): round <round> revisions (applied <k>, disputed <m>, stale <s>)"
       #
       # After commit, detect a hook that rewrote the spec by comparing
       # the working tree to the just-made commit. A hook that staged
@@ -689,8 +724,12 @@ renders the final report to the user via `emit_to_user`. The mapping:
   each as `- <sha> <commit-subject>`, or `(none)` if no commits were
   made. `start_sha` was captured at loop entry; the range is bounded
   to the spec file so unrelated commits in the repo are excluded.
-- `Error:` — rendered on `dispatch-error`, `commit-failed`, and
-  `template-bug` only, as `Error: <repr(error)>`.
+- `Error:` — rendered on `dispatch-error`, `commit-failed`,
+  `template-bug`, `precondition-failed`, and `resolve-failed`, as
+  `Error: <repr(error)>`. The two pre-loop statuses (`precondition-failed`,
+  `resolve-failed`) carry the only actionable info the user has for
+  those failures, so the Error line MUST render — without it the user
+  sees a status but no recovery hint.
 
 Additional rule: on `commit-failed`, also render a clarifying line
 above `Commits:`:
@@ -864,7 +903,7 @@ Per-round counts (`k`, `m`, `s`) appear in commit messages.
 
 ```
 Spec:    `<absolute spec path>`
-Status:  `clean` | `stuck` | `cap-hit` | `hard-cap` | `malformed` | `dispatch-error` | `commit-failed` | `template-bug` | `precondition-failed` | `resolve-failed`
+Status:  clean | stuck | cap-hit | hard-cap | malformed | dispatch-error | commit-failed | template-bug | precondition-failed | resolve-failed
 Rounds:  N
 
 Applied (K = <count>):
@@ -889,11 +928,12 @@ Notes:
   (omitted entirely when empty)
 
 Commits:
-  - `<sha>` spec(`<topic>`): round 1 revisions (applied k, disputed m, stale s)
+  - <sha> spec(<topic>): round 1 revisions (applied <k>, disputed <m>, stale <s>)
   - ...
   (or `(none)`)
 
-Error (only on `dispatch-error` / `commit-failed` / `template-bug`):
+Error (rendered on dispatch-error / commit-failed / template-bug /
+       precondition-failed / resolve-failed):
   <error repr>
 ```
 
