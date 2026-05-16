@@ -105,9 +105,11 @@ which the parent enforces before calling `Agent`:
    `$ARGUMENTS` as the `spec` argument.
 3. The skill instructs the parent agent to:
    1. **Resolve the target spec** (see "Spec discovery" below).
-   2. Load `reviewer-prompt.md` from the skill directory.
-   3. Run the loop (below) until a stop condition fires.
-   4. Print the final report.
+   2. **Print the resolved absolute spec path to the terminal** so the
+      user can confirm before any subagent work happens.
+   3. Load `reviewer-prompt.md` from the skill directory.
+   4. Run the loop (below) until a stop condition fires.
+   5. Print the final report.
 
 ### Spec discovery
 
@@ -118,7 +120,10 @@ macOS, and Windows).
 - **Argument given.** Treated literally as a single path (no glob
   expansion). Resolved relative to the parent's current working
   directory if not absolute; promoted to absolute before dispatch.
-  Validation rules:
+  The parent's cwd in a Claude Code session is whatever Claude Code
+  set, which is usually but not always what the user expects — passing
+  an absolute path avoids ambiguity, and the resolved path is printed
+  before dispatch (see Invocation flow). Validation rules:
   - exactly one argument; more than one → error
     `"/spec-review accepts at most one argument; got N"`.
   - path must exist → otherwise error
@@ -128,14 +133,11 @@ macOS, and Windows).
 - **No argument.** Discover via
   `Glob(pattern="docs/superpowers/specs/**/*.md")` from the parent's
   cwd, then pick the file with the newest mtime. On mtime ties, pick
-  the lexicographically largest path; under the
-  `YYYY-MM-DD-<slug>.md` convention this picks the most recently dated
-  spec, and beyond that the largest-alphabetical slug. Errors:
+  the lexicographically largest path — a stable fallback that typically
+  picks the most-recently-dated spec under the `YYYY-MM-DD-<slug>.md`
+  convention. Errors:
   - the `Glob` call returns zero results → error
     `"no specs found under <cwd>/docs/superpowers/specs/; pass a path explicitly"`.
-    (`Glob` does not distinguish "directory missing" from "directory
-    empty"; the single error message covers both, which is fine for
-    this UX.)
 
 ### Skill direct-invocation contract
 
@@ -152,7 +154,10 @@ the `spec` argument.
 
 ## The reviewer subagent prompt
 
-Stored at `skills/spec-review/reviewer-prompt.md`. Verbatim contents:
+Stored at `skills/spec-review/reviewer-prompt.md`. This prompt is the
+sole canonical definition of what each severity tier means; the design
+doc's "Severity tiers" subsection only describes the tiers' role in the
+loop, not their definitions. Verbatim prompt contents:
 
 ```
 You are reviewing a spec at <SPEC_PATH>. You will NOT make any changes —
@@ -182,6 +187,9 @@ in this exact shape:
 **Where:** <section / quote from the spec>
 **What's wrong:** <one or two sentences>
 **Address:** <one or two sentences on what specifically should change>
+
+At least one of `**Where:**`, `**What's wrong:**`, or `**Address:**`
+must contain non-empty content. A heading with no body is not a catch.
 
 Use sequential short-ids per severity (C1, C2, ...; I1, I2, ...; M1, M2,
 ...). Do not nest catches; do not combine multiple issues into one item.
@@ -234,20 +242,26 @@ tags into the rendered prompt"`.
 
 ## The parent loop algorithm
 
-Pseudocode for the parent agent's behavior, as instructed by `SKILL.md`:
+Pseudocode for the parent agent's behavior, as instructed by `SKILL.md`.
+List operations use `.append(x)` for a single element and `+= [...]` for
+a list extension. Shell-style operations (`git add`, `git commit`) are
+wrapped in helper-function references (`commit_spec(...)`) to remind
+implementers that they need to be invoked as actual tool/shell calls
+with proper quoting.
 
 ```
 applied       = []   # brief descriptions, persist across rounds
 disagreements = []   # {catch, parent's reasoning} pairs, persist across rounds
 stale         = []   # catches whose Edit could not be applied within a round
                      # because a prior catch's edit clobbered the anchor
-notes         = []   # one-line notes surfaced in the final report
-                     # (e.g., zero-match rebuttal removals)
+notes         = []   # one-line informational notes surfaced in the final
+                     # report; no deduplication or length cap in v1
 round         = 1
 MAX_ROUNDS    = 5    # illustrative; runtime canonical source is SKILL.md
 
-assert_git_preconditions()           # see "Git preconditions" below
-spec_path = resolve_spec(argument)   # absolute, see "Spec discovery"
+assert_git_preconditions(spec_path)    # see "Git preconditions" below
+spec_path = resolve_spec(argument)     # absolute, see "Spec discovery"
+print "Resolved spec: " + spec_path    # I4: surface the path before work
 template  = read("skills/spec-review/reviewer-prompt.md")
 
 loop:
@@ -262,11 +276,18 @@ loop:
 
   parsed = parse(response)
 
-  # Single retry on malformed output, with a correction nudge.
+  # Single retry on malformed output, with a correction nudge. NOTE: the
+  # retry is a fresh subagent — it has no memory of the first attempt.
+  # The nudge directs its first attempt to comply on format alone; we do
+  # NOT echo the prior malformed response back into the prompt (would
+  # blow up payload on garbage output).
   if parsed == MALFORMED:
-    nudged = prompt + "\n\nYour previous response did not match the "  \
-                      "required format. Re-emit your review in the "    \
-                      "exact format described above."
+    nudged = prompt + "\n\nA previous attempt at this review did not "  \
+                      "match the required format. Emit your review in " \
+                      "the exact format described above; in particular, "\
+                      "the LAST non-empty line must be exactly "         \
+                      "'VERDICT: NO_REMAINING_ISSUES' or "               \
+                      "'VERDICT: ISSUES_REMAIN'."
     try:
       response = Agent.dispatch(general-purpose, nudged)
     except DispatchError as e:
@@ -284,11 +305,14 @@ loop:
     exit
 
   # The parser already stripped any "REBUTTAL: " prefix from catch.title
-  # and set catch.is_rebuttal_prefixed accordingly. A catch is treated
-  # as a rebuttal if (a) it carried the explicit prefix AND there are
-  # priors to rebut, OR (b) the parent judges it substantially restates
-  # any prior disagreement.
+  # and set catch.is_rebuttal_prefixed accordingly.
   for catch in catches:
+    # Log a note if the reviewer used REBUTTAL: on round 1 (no priors).
+    if catch.is_rebuttal_prefixed and disagreements == []:
+      notes.append("catch " + catch.short_id + ": REBUTTAL: prefix "
+                   "appeared with no prior disagreements; treated as "
+                   "a new catch")
+
     catch.is_rebuttal = (catch.is_rebuttal_prefixed and disagreements != []) \
                         or overlaps_any(catch, disagreements)
 
@@ -300,22 +324,28 @@ loop:
   for catch in catches:
     if catch.is_rebuttal:
       if rebuttal_is_compelling(catch, disagreements):
+        # The parent ACCEPTED the rebuttal logically — the prior
+        # disagreement should be removed even if applying the edit
+        # mechanically fails. INVALID_ANCHOR / STALE replace the prior
+        # disagreement; they do not stack on top of it.
+        remove_matching_disagreement(catch, disagreements)
+
         result = apply_edit(catch)
         if result == OK:
           applied_this_round.append(brief_description(catch))
-          removed = remove_matching_disagreement(catch, disagreements)
-          if removed == 0:
-            notes.append("rebuttal '" + catch.short_id +
-                         "' matched no disagreement; treated as new applied")
         elif result == STALE:
           stale_this_round.append(catch)
         elif result == INVALID_ANCHOR:
           disagreed_this_round.append(
-            {catch, reasoning: "could not locate the anchor cited by "
-                               "the reviewer; treating as could-not-address"})
+            {catch, reasoning: "compelling rebuttal but could not "
+                               "locate the anchor cited; "
+                               "treating as could-not-address"})
       else:
-        # weak rebuttal — keep the existing disagreement, do not re-add
-        pass
+        # Weak rebuttal — the prior disagreement already surfaces this
+        # issue. Don't re-add to any bucket, but DO log a note so the
+        # final report makes the round's outcome legible.
+        notes.append("round " + round + ": rebuttal " + catch.short_id +
+                     " was not compelling; the prior disagreement stands")
     else:
       if parent_judges_catch_correct_or_uncertain(catch):
         result = apply_edit(catch)
@@ -335,23 +365,26 @@ loop:
   stale         += stale_this_round
 
   # Commit BEFORE the stuck check so a stuck-exit never leaves applied
-  # edits uncommitted. Single -m flag, single string.
+  # edits uncommitted. commit_spec() shells out with proper quoting and
+  # a single `-m` argument carrying the full message.
   if applied_this_round:
+    k = len(applied_this_round)
+    m = len(disagreed_this_round)
+    s = len(stale_this_round)
     try:
-      git add <spec_path>
-      git commit -m "spec(<topic>): round <round> revisions (applied <k>, disputed <m>, stale <s>)"
-      # k / m / s are PER-ROUND counts (lowercase). Final-report
-      # K / M (uppercase) are CUMULATIVE.
+      commit_spec(spec_path, round, k, m, s)
+      # Equivalent to:
+      #   git add "<spec_path>"
+      #   git commit -m "spec(<topic>): round <round> revisions (applied k, disputed m, stale s)"
     except CommitFailed as e:
       report("commit-failed", round, applied, disagreements, stale, notes, error=e)
       exit
 
-  # Stuck detector: any round with zero forward progress is stuck. This
-  # catches both "all catches were weak rebuttals" AND "all new catches
-  # were disputed" — both are stable points where the parent has nothing
-  # to apply. Trade-off: if the reviewer would have accepted all
-  # disputes on the next round (returning NO_REMAINING_ISSUES), we exit
-  # one round early. Acceptable; the user can re-run if curious.
+  # Stuck detector: any round with zero forward progress is stuck.
+  # Captures (a) all catches were weak rebuttals (dropped to notes),
+  # (b) all new catches were disputed. Trade-off: if the reviewer would
+  # have accepted all disputes on the next round, we exit one round
+  # early. Acceptable.
   if catches and applied_this_round == [] and stale_this_round == []:
     report("stuck", round, applied, disagreements, stale, notes)
     exit
@@ -393,9 +426,12 @@ Parser permissiveness rules:
 - `### ` headings whose content does not match
   `<SEVERITY>. <short-id>: ...` are ignored (not catches). The parser
   does not error on them.
-- Missing `**Where:**` / `**What's wrong:**` / `**Address:**` lines
-  inside an otherwise valid catch heading are tolerated; the missing
-  field is left empty. The catch still counts.
+- Inside an otherwise valid catch heading, the `**Where:**`,
+  `**What's wrong:**`, and `**Address:**` lines are tolerated as
+  missing — but **at least one of the three must contain non-empty
+  content** for the catch to count as parseable. A heading with no
+  body content is silently skipped (not counted as a catch and not
+  causing `MALFORMED`).
 - The verdict line check is strict: the last non-empty line of the
   response, after trimming whitespace, must equal exactly
   `VERDICT: NO_REMAINING_ISSUES` or `VERDICT: ISSUES_REMAIN`. Anything
@@ -405,27 +441,36 @@ Parser permissiveness rules:
 
 ### Rubrics
 
-`apply_edit(catch)` → Uses `Edit` (or `Write` for whole-section
-rewrites) to modify the spec to address `catch`. Edits within a round
-are applied sequentially in the order the reviewer listed the catches.
+`apply_edit(catch)` → The parent re-reads the current spec from disk,
+locates the change site implied by the catch (using `catch.where` as
+the primary anchor, plus `whats_wrong` / `address` as guides), and
+**authors its own `old_string`** for the `Edit` tool from the current
+spec content. The catch fields are descriptive, not literal anchors —
+the reviewer was asked to *quote* in `where` but may have paraphrased
+or quoted with formatting drift. For whole-section rewrites the parent
+may use `Write` instead. Edits within a round are applied sequentially
+in the order the reviewer listed the catches in the response. (The
+reviewer's prompt does not constrain that ordering, so STALE outcomes
+may differ across runs with semantically identical reviewer output.
+This is accepted in v1; if it bites, constrain the reviewer prompt to
+require document-order emission.)
+
 Returns:
 
-- `OK` — the edit succeeded.
-- `STALE` — `Edit` failed because the anchor text was present on disk
-  at the start of the round but has been changed by a prior catch's
-  edit in this same round. Recorded in `stale[]`; surfaced in the final
-  report; not re-sent to the reviewer (they'll likely re-raise
-  organically).
-- `INVALID_ANCHOR` — `Edit` failed and the anchor text was never
-  present on disk at the start of the round (the reviewer hallucinated
-  it or quoted from a stale memory of the spec). Recorded in
-  `disagreements[]` with reasoning "could not locate the anchor cited
-  by the reviewer; treating as could-not-address" so the reviewer sees
-  the parent disagreed on grounds of mechanical infeasibility.
+- `OK` — the `Edit` succeeded.
+- `STALE` — `Edit` failed, AND the parent-authored `old_string` was
+  present in the round-start spec snapshot but is no longer present
+  (clobbered by an earlier within-round edit). Recorded in `stale[]`;
+  surfaced in the final report; not re-sent to the reviewer.
+- `INVALID_ANCHOR` — `Edit` failed, AND the parent-authored
+  `old_string` was never present in the round-start spec snapshot —
+  meaning the parent could not locate the change site from the catch's
+  descriptive fields. Recorded in `disagreements[]` with the
+  could-not-address reasoning.
 
 To distinguish `STALE` from `INVALID_ANCHOR`, the parent caches the
 spec's content at the start of each round and checks whether the
-`Edit`'s `old_string` was present in that snapshot.
+parent-authored `old_string` was present in that snapshot.
 
 `brief_description(catch)` → A one-line summary in the spec author's
 own words, ≤ 100 characters, focused on the change applied rather than
@@ -438,11 +483,14 @@ the gap is real but believes addressing it will not harm the spec.
 False only when the parent has positive reason to believe the catch is
 wrong (factually, scope-wise, or rests on a misreading).
 
-  **Asymmetric rule for removals.** When the catch's remediation
-  primarily *removes* existing spec content (rather than adding or
-  refining it), the uncertainty branch flips: the parent applies only
-  on positive agreement, never on uncertainty. Removing on doubt is
-  too easy to regret.
+  **Asymmetric rule for removal-based remediation.** This rule is
+  evaluated against the *parent's planned remediation*, not the
+  reviewer's `address` suggestion. If the parent's plan would primarily
+  *remove* existing spec content rather than add or refine it, the
+  uncertainty branch flips: apply only on positive agreement, never on
+  uncertainty. If the parent is uncertain but the catch could be
+  addressed by adding clarification instead of removing content, prefer
+  that path.
 
 `rebuttal_is_compelling(catch, disagreements)` → True when the rebuttal
 points to a new fact, new consequence, or a logical flaw in the
@@ -459,9 +507,9 @@ imposed. Returns `False` on an empty `disagreements` list.
 
 `remove_matching_disagreement(catch, disagreements)` → Removes every
 entry `d` from `disagreements` for which `overlaps_any(catch, [d])`
-returns True. Returns the number of entries removed. If zero, the
-catch is treated as a normal applied catch and a one-line note is added
-to `notes[]` for the final report.
+returns True. Called on the **compelling-rebuttal** branch, before
+`apply_edit`, so the prior disagreement is gone whether or not the
+edit succeeds mechanically. Returns the number of entries removed.
 
 ### `<topic>` derivation for commit messages
 
@@ -478,6 +526,8 @@ report, and it informs (but does not determine) the parent's apply /
 dispute decisions. The loop's stop conditions and counting are
 severity-agnostic. The reviewer is asked to triage anyway because the
 discipline of triaging is itself a useful prompt for finding issues.
+**The canonical definitions of each tier live in the reviewer prompt
+above; do not duplicate them here.**
 
 ### State across rounds
 
@@ -490,51 +540,72 @@ on different specs in the same session do not bleed state.
 - `disagreements[]`: each entry is `{catch, parent's reasoning}`.
   Re-sent verbatim each subsequent round so the reviewer cannot quietly
   re-raise the same item without acknowledging the prior reasoning.
-- `stale[]`: catches whose `Edit` returned `STALE` (anchor present at
-  start of round but clobbered by an earlier within-round edit).
-  Surfaced in the final report; not re-sent to the reviewer.
-- `notes[]`: one-line notes the loop wants to surface in the final
-  report (currently: zero-match rebuttal removals).
+- `stale[]`: catches whose `Edit` returned `STALE`. Surfaced in the
+  final report; not re-sent to the reviewer.
+- `notes[]`: free-form one-line informational notes accumulated during
+  the loop (zero-match rebuttal removals, weak-rebuttal dismissals,
+  round-1 stray REBUTTAL: prefixes). No deduplication; no length cap.
 
-**Bucket disjointness invariant:** every catch surfaces in exactly one
+**Bucket disjointness invariant.** Every catch surfaces in exactly one
 of `applied`, `disagreements`, `stale`, or — on `cap-hit` — `remaining`.
-INVALID_ANCHOR catches are routed to `disagreements`. STALE catches go
-to `stale`. The parent enforces this invariant; double-counting is a
-bug.
+*Exception:* a **weak rebuttal** appears in none of these buckets,
+because the prior disagreement it restates already surfaces the same
+logical issue; the weak rebuttal is instead recorded in `notes[]` so
+the round's outcome remains legible in the report.
 
 Nothing is persisted to disk between rounds besides the spec edits
 themselves and the per-round commits.
 
 ## Git preconditions and failure handling
 
-Before the first dispatch the parent calls `assert_git_preconditions()`:
+The parent's git operations target the repository that **contains the
+spec file**, not the parent's cwd's repository (the two can differ).
+The check uses `git -C <dirname(spec_path)> rev-parse --show-toplevel`.
 
-- If the resolved spec is not inside a git working tree → abort with
+Before the first dispatch the parent calls
+`assert_git_preconditions(spec_path)`:
+
+- If `git -C <dirname(spec_path)> rev-parse --show-toplevel` fails →
+  abort with
   `"spec is not inside a git repository; per-round commits cannot be created"`.
+- If `git -C <repo> rev-parse --abbrev-ref HEAD` returns `HEAD` (detached
+  HEAD) → abort with
+  `"spec's repository is in detached-HEAD state; check out a branch before running /spec-review"`.
+- If `git -C <repo> rev-parse --git-path rebase-merge` /
+  `rebase-apply` / `MERGE_HEAD` / `CHERRY_PICK_HEAD` exists → abort with
+  `"spec's repository has an in-progress rebase/merge/cherry-pick; finish or abort it first"`.
 - If the **spec file itself** has staged or unstaged uncommitted
   changes → abort with
   `"spec has uncommitted changes; commit or stash them before running /spec-review so the per-round commit trail is accurate"`.
-  Without this check, the parent's first `git add <spec_path>` plus
-  `git commit` would sweep the user's pre-existing in-progress edits
-  into "round 1 revisions" and silently corrupt the audit trail.
 - If the working tree has staged changes touching files OTHER than the
   spec → abort with
   `"unrelated staged changes present; commit or stash them before running /spec-review"`.
 - Unstaged changes to files other than the spec are allowed (the parent
   only `git add`s the spec file itself).
 
+These pre-checks let the loop abort *before* spending a subagent
+dispatch when the repo state guarantees commit-failure later.
+
 On commit failure during the loop (hook rejection, signing failure,
-detached HEAD, hook that modifies the spec file, etc.) the loop stops
-with the `commit-failed` status. No retries. Already-applied edits in
-prior rounds remain committed; the most recent round's edits remain on
-disk for the user to inspect.
+hook that modifies the spec file, etc.) the loop stops with the
+`commit-failed` status. No retries. Already-applied edits in prior
+rounds remain committed; the most recent round's edits remain on disk
+for the user to inspect.
+
+**Working-tree cleanliness on exit:** `clean`, `stuck`, and `cap-hit`
+exits commit every round's applied edits before exiting. The `malformed`
+and `dispatch-error` exits return before any edits are attempted in the
+failing round, so the working tree contains only committed changes at
+exit. The `commit-failed` exit is the only path that leaves uncommitted
+edits on disk — by design, so the user can inspect what would have been
+committed.
 
 ## Stop conditions
 
 | Condition                                                                                                          | Final status     |
 | ------------------------------------------------------------------------------------------------------------------ | ---------------- |
 | Reviewer returns `VERDICT: NO_REMAINING_ISSUES`                                                                    | `clean`          |
-| Round produced zero forward progress (`applied_this_round == []` and `stale_this_round == []`) with at least one catch | `stuck`      |
+| `catches != [] and applied_this_round == [] and stale_this_round == []`                                            | `stuck`          |
 | `round > MAX_ROUNDS`                                                                                               | `cap-hit`        |
 | `Agent.dispatch` itself raised (transport or platform failure)                                                     | `dispatch-error` |
 | Reviewer response parsed as `MALFORMED` twice in a row (initial + single retry with correction nudge)              | `malformed`      |
@@ -549,27 +620,29 @@ cases that surface context for human review.
 
 ## Final report (printed to terminal)
 
-Cumulative totals (`K`, `M`, `S`) are uppercase. Per-round counts in
-commit messages (`k`, `m`, `s`) are lowercase. The `Notes:` and
-`Remaining:` sections render only when non-empty; the `Stale:` and
-`Commits:` sections render `(none)` when empty so their absence is
-distinguishable from a structural omission.
+Cumulative counts: `K = len(applied)`, `M = len(disagreements)`,
+`S = len(stale)`. These uppercase names appear in the report headers.
+Per-round counts (`k`, `m`, `s`) appear in commit messages.
+
+The `Notes:` and `Remaining:` sections render only when non-empty; the
+`Stale:` and `Commits:` sections render `(none)` when empty so their
+absence is distinguishable from a structural omission.
 
 ```
-Spec:    `docs/superpowers/specs/2026-05-16-spec-review-skill-design.md`
+Spec:    `<absolute spec path>`
 Status:  `clean` | `stuck` | `cap-hit` | `malformed` | `dispatch-error` | `commit-failed`
 Rounds:  N
 
-Applied (K):
+Applied (K = <count>):
   - [CRITICAL] `<brief description>`
   - [IMPORTANT] `<brief description>`
   - ...
 
-Disputed (M):
+Disputed (M = <count>):
   - [MINOR] `<catch title>` — reasoning: `<parent's reasoning>`
   - ...
 
-Stale (S):
+Stale (S = <count>):
   - [IMPORTANT] `<catch title>`
   - ...
   (or `(none)`)
@@ -628,6 +701,12 @@ reviewer behavior is stochastic. The expected outcomes are qualitative.
   accept all disputes before declaring stuck). The current single-round
   rule is the simpler default; if `stuck` exits feel premature in
   practice, revisit.
+- Echoing the prior malformed response back into the retry prompt.
+  Excluded to bound prompt size on garbage output; the retry subagent
+  is given the format directive and must comply blind.
+- Constraining catch emission order. The reviewer may emit catches in
+  any order; STALE outcomes may differ across runs with semantically
+  identical reviewer output. Acceptable in v1.
 
 These are deferred until the basic loop is in use and the friction
 points are real, not hypothetical.
