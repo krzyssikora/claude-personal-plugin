@@ -45,11 +45,17 @@ From any Claude Code session (the command is global):
 Confirm by running `/reload-plugins` and then `/plugin` to view the
 manager — `spec-review` should appear under the Installed tab.
 
-After this step, the slash command is registered as
-`/spec-review:spec-review` (Claude Code namespaces every plugin command
-as `<plugin-name>:<command-name>` and the doubled form is unavoidable
-when plugin name == command name). The skill is available via the Skill
+After this step, the slash command is registered as `/spec-review:run`
+(Claude Code namespaces every plugin command as
+`<plugin-name>:<command-name>`). The skill is available via the Skill
 tool as `spec-review:spec-review`.
+
+Note: the command file is named `run.md` rather than `spec-review.md`
+on purpose. If a plugin's command and skill share both the plugin
+namespace and the leaf name, the Skill tool's dispatcher routes
+`Skill("spec-review:spec-review")` to the command stub instead of the
+skill body, leaving the agent with no skill content. Keeping the
+command's leaf name distinct (`run`) avoids the collision.
 
 ### 3. (Optional) Install the user-level shortcut for clean `/spec-review`
 
@@ -85,9 +91,8 @@ still lives in the plugin — the user-level file is just a thin shim.
 In a fresh Claude Code session:
 
 - `/plugin` shows `spec-review` under the Installed tab with no errors.
-- `/spec-review:spec-review --help`-style invocations (or just typing
-  `/spec-review:spec-review` and observing the agent's response) reach
-  the plugin's slash command body.
+- Typing `/spec-review:run` reaches the plugin's slash command body,
+  which then invokes the skill.
 - If you did Step 3, `/spec-review` works the same way.
 
 ## Smoke test without installing
