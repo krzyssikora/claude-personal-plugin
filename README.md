@@ -2,7 +2,7 @@
 
 Personal Claude Code tooling — a marketplace, plugins, and optional
 user-level slash commands that follow the user across every project on
-a given machine. Not fijit-specific.
+a given machine.
 
 ## What's in here
 
@@ -33,8 +33,13 @@ Three steps. Step 3 is optional but recommended.
 From any Claude Code session (the command is global):
 
 ```
-/plugin marketplace add C:\Users\krzys\claude-personal-plugin
+/plugin marketplace add krzyssikora/claude-personal-plugin
 ```
+
+The `owner/repo` shorthand resolves to this GitHub repo. The full-URL
+form (`/plugin marketplace add https://github.com/krzyssikora/claude-personal-plugin.git`)
+also works. To register from a local clone instead, pass the clone's
+absolute path in place of the shorthand.
 
 ### 2. Install the plugin
 
@@ -97,13 +102,18 @@ In a fresh Claude Code session:
 
 ## Smoke test without installing
 
+Clone the repo, then launch a Claude Code session pointed at the clone:
+
 ```
-claude --plugin-dir "C:\Users\krzys\claude-personal-plugin"
+git clone https://github.com/krzyssikora/claude-personal-plugin.git
+claude --plugin-dir ./claude-personal-plugin
 ```
 
 Loads the plugin only for that Claude Code session — no marketplace,
 no user-level shortcut. Useful when iterating on the plugin during
-development.
+development. `--plugin-dir` accepts either a directory or a `.zip`
+archive (Claude Code v2.1.128+) and may be repeated to load multiple
+plugins.
 
 ## Repo layout reminder
 
