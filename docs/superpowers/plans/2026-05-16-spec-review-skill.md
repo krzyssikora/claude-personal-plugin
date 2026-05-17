@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Path convention:** `<repo>` throughout this document denotes the absolute path of your cloned `claude-personal-plugin/` repo (the directory containing `.claude-plugin/marketplace.json`). Substitute your own path when running any bash command.
+
 **Goal:** Build the `spec-review` Claude Code personal plugin specified at `docs/superpowers/specs/2026-05-16-spec-review-skill-design.md`. After this plan is complete, `/spec-review` is available in every Claude Code project on this machine.
 
-**Architecture:** A single Claude Code personal plugin in the existing repo at `C:\Users\krzys\claude-personal-plugin\`. Four artifacts: a JSON plugin manifest, a slash-command shim, a `SKILL.md` containing the parent-agent loop instructions, and a `reviewer-prompt.md` containing the verbatim template the parent dispatches to each fresh subagent. No executable code — the "logic" is natural-language instructions that the parent agent in a Claude Code session follows at invocation time.
+**Architecture:** A single Claude Code personal plugin in the existing repo at `<repo>/`. Four artifacts: a JSON plugin manifest, a slash-command shim, a `SKILL.md` containing the parent-agent loop instructions, and a `reviewer-prompt.md` containing the verbatim template the parent dispatches to each fresh subagent. No executable code — the "logic" is natural-language instructions that the parent agent in a Claude Code session follows at invocation time.
 
 **Tech Stack:** Markdown (for skills and slash commands), JSON (plugin manifest), git (per-round commits and the verification trail), the Claude Code `Agent` tool (subagent dispatch), `Read` / `Edit` / `Write` / `Glob` / `Bash` tools (spec inspection, edits, discovery, git ops).
 
@@ -12,7 +14,7 @@
 
 ## Pre-flight assumptions
 
-- The plugin repo is initialized at `C:\Users\krzys\claude-personal-plugin\` with the spec at `docs/superpowers/specs/2026-05-16-spec-review-skill-design.md`. (Verified: 11 commits already present.)
+- The plugin repo is initialized at `<repo>/` with the spec at `docs/superpowers/specs/2026-05-16-spec-review-skill-design.md`. (Verified: 11 commits already present.)
 - The implementer has Claude Code installed and can install local plugins via `/plugin install <path>`.
 - The implementer can read the spec while implementing; nothing in this plan replaces the spec — the plan is the *order* of work, the spec is the *content*.
 
@@ -70,7 +72,7 @@ The plugin manifest declares the plugin's identity to Claude Code so that `/plug
 - [ ] **Step 1: Verify the parent directory exists**
 
 ```bash
-ls /c/Users/krzys/claude-personal-plugin/.claude-plugin/ 2>&1 || mkdir -p /c/Users/krzys/claude-personal-plugin/.claude-plugin
+ls <repo>/.claude-plugin/ 2>&1 || mkdir -p <repo>/.claude-plugin
 ```
 
 - [ ] **Step 2: Write `plugin.json` with the manifest fields**
@@ -89,13 +91,13 @@ ls /c/Users/krzys/claude-personal-plugin/.claude-plugin/ 2>&1 || mkdir -p /c/Use
 
 - [ ] **Step 3: Verify the file is valid JSON**
 
-Run: `python -c "import json; json.load(open('/c/Users/krzys/claude-personal-plugin/.claude-plugin/plugin.json'))" && echo OK`
+Run: `python -c "import json; json.load(open('<repo>/.claude-plugin/plugin.json'))" && echo OK`
 Expected: `OK`
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /c/Users/krzys/claude-personal-plugin
+cd <repo>
 git add .claude-plugin/plugin.json
 git commit -m "feat(plugin): add plugin manifest"
 ```
@@ -112,7 +114,7 @@ The slash command is a thin shim. When the user types `/spec-review [path]`, Cla
 - [ ] **Step 1: Verify the parent directory**
 
 ```bash
-mkdir -p /c/Users/krzys/claude-personal-plugin/commands
+mkdir -p <repo>/commands
 ```
 
 - [ ] **Step 2: Write `commands/spec-review.md`**
@@ -128,13 +130,13 @@ Invoke the `spec-review` skill. Pass `$ARGUMENTS` as the `spec` argument — ver
 
 - [ ] **Step 3: Verify the frontmatter is well-formed**
 
-Run: `python -c "import sys; from pathlib import Path; t = Path('/c/Users/krzys/claude-personal-plugin/commands/spec-review.md').read_text(); assert t.startswith('---\n') and t.count('---\n') >= 2, 'malformed frontmatter'; print('OK')"`
+Run: `python -c "import sys; from pathlib import Path; t = Path('<repo>/commands/spec-review.md').read_text(); assert t.startswith('---\n') and t.count('---\n') >= 2, 'malformed frontmatter'; print('OK')"`
 Expected: `OK`
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /c/Users/krzys/claude-personal-plugin
+cd <repo>
 git add commands/spec-review.md
 git commit -m "feat(command): add /spec-review slash command shim"
 ```
@@ -151,7 +153,7 @@ This is a **verbatim** copy of the prompt block in the spec's "The reviewer suba
 - [ ] **Step 1: Verify the parent directory**
 
 ```bash
-mkdir -p /c/Users/krzys/claude-personal-plugin/skills/spec-review
+mkdir -p <repo>/skills/spec-review
 ```
 
 - [ ] **Step 2: Write `reviewer-prompt.md` with the verbatim prompt content**
@@ -237,18 +239,18 @@ non-empty line of the response (no trailing prose, no code fences):
 
 Run:
 ```bash
-grep -c '<SPEC_PATH>' /c/Users/krzys/claude-personal-plugin/skills/spec-review/reviewer-prompt.md
-grep -c '<PRIOR_ROUNDS_BLOCK>' /c/Users/krzys/claude-personal-plugin/skills/spec-review/reviewer-prompt.md
-grep -c '</PRIOR_ROUNDS_BLOCK>' /c/Users/krzys/claude-personal-plugin/skills/spec-review/reviewer-prompt.md
-grep -c 'VERDICT: NO_REMAINING_ISSUES' /c/Users/krzys/claude-personal-plugin/skills/spec-review/reviewer-prompt.md
-grep -c 'VERDICT: ISSUES_REMAIN' /c/Users/krzys/claude-personal-plugin/skills/spec-review/reviewer-prompt.md
+grep -c '<SPEC_PATH>' <repo>/skills/spec-review/reviewer-prompt.md
+grep -c '<PRIOR_ROUNDS_BLOCK>' <repo>/skills/spec-review/reviewer-prompt.md
+grep -c '</PRIOR_ROUNDS_BLOCK>' <repo>/skills/spec-review/reviewer-prompt.md
+grep -c 'VERDICT: NO_REMAINING_ISSUES' <repo>/skills/spec-review/reviewer-prompt.md
+grep -c 'VERDICT: ISSUES_REMAIN' <repo>/skills/spec-review/reviewer-prompt.md
 ```
 Expected: each `grep -c` returns at least `1`. If any returns `0`, the copy is broken — fix it.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /c/Users/krzys/claude-personal-plugin
+cd <repo>
 git add skills/spec-review/reviewer-prompt.md
 git commit -m "feat(skill): add reviewer prompt template"
 ```
@@ -266,7 +268,7 @@ Three sub-steps, each producing one section of the file, plus one assembly and o
 
 - [ ] **Step 1: Write the frontmatter and the "When to use" section**
 
-Open `/c/Users/krzys/claude-personal-plugin/skills/spec-review/SKILL.md` and write:
+Open `<repo>/skills/spec-review/SKILL.md` and write:
 
 ```markdown
 ---
@@ -612,10 +614,10 @@ To change either, edit this file. They are deliberately not runtime-configurable
 
 Run:
 ```bash
-wc -l /c/Users/krzys/claude-personal-plugin/skills/spec-review/SKILL.md
-grep -c '^## ' /c/Users/krzys/claude-personal-plugin/skills/spec-review/SKILL.md
-grep -c 'MAX_ROUNDS' /c/Users/krzys/claude-personal-plugin/skills/spec-review/SKILL.md
-grep -c 'HARD_CAP' /c/Users/krzys/claude-personal-plugin/skills/spec-review/SKILL.md
+wc -l <repo>/skills/spec-review/SKILL.md
+grep -c '^## ' <repo>/skills/spec-review/SKILL.md
+grep -c 'MAX_ROUNDS' <repo>/skills/spec-review/SKILL.md
+grep -c 'HARD_CAP' <repo>/skills/spec-review/SKILL.md
 ```
 Expected: line count > 250, at least 8 `## ` H2 sections, at least 4 mentions each of `MAX_ROUNDS` and `HARD_CAP`. If any is off, you're missing a section — review against the spec.
 
@@ -646,7 +648,7 @@ Open `docs/superpowers/specs/2026-05-16-spec-review-skill-design.md`. For each o
 - [ ] **Step 9: Commit**
 
 ```bash
-cd /c/Users/krzys/claude-personal-plugin
+cd <repo>
 git add skills/spec-review/SKILL.md
 git commit -m "feat(skill): add SKILL.md with parent loop instructions"
 ```
@@ -665,7 +667,7 @@ Claude Code's `/plugin install` works against a **marketplace**, not a raw files
 In a Claude Code session (any project; the command is global):
 
 ```
-/plugin marketplace add C:\Users\krzys\claude-personal-plugin
+/plugin marketplace add <repo>
 ```
 
 Expected: Claude Code reports the marketplace was added.
@@ -680,7 +682,7 @@ Expected: Claude Code reports the marketplace was added.
 
 Expected: Claude Code reports the plugin installed successfully and lists the available slash commands and skills (`spec-review` should appear in both).
 
-**Alternative for one-shot smoke testing without a persistent install:** start Claude Code with `claude --plugin-dir "C:\Users\krzys\claude-personal-plugin"`. This loads the plugin only for that session.
+**Alternative for one-shot smoke testing without a persistent install:** start Claude Code with `claude --plugin-dir "<repo>"`. This loads the plugin only for that session.
 
 - [ ] **Step 2: Confirm `/spec-review` is registered**
 
@@ -699,7 +701,7 @@ If the plugin fails to load, inspect Claude Code's plugin error output. Common c
 If you updated `README.md` to note the install path, commit:
 
 ```bash
-cd /c/Users/krzys/claude-personal-plugin
+cd <repo>
 git add README.md
 git commit -m "docs: note plugin install command in README"
 ```
@@ -792,7 +794,7 @@ PASS if at least one entry appears under `Disputed`, AND the reviewer did not si
 The test will probably create new commits on the spec. Reset:
 
 ```bash
-cd /c/Users/krzys/claude-personal-plugin
+cd <repo>
 git reset --hard <sha-before-test>  # use git reflog to find it
 ```
 
@@ -809,8 +811,8 @@ git reset --hard <sha-before-test>  # use git reflog to find it
 Currently only one (`2026-05-16-spec-review-skill-design.md`). Create a second decoy:
 
 ```bash
-echo "# decoy spec" > /c/Users/krzys/claude-personal-plugin/docs/superpowers/specs/2026-05-17-decoy.md
-touch -d "2026-05-17 10:00" /c/Users/krzys/claude-personal-plugin/docs/superpowers/specs/2026-05-17-decoy.md
+echo "# decoy spec" > <repo>/docs/superpowers/specs/2026-05-17-decoy.md
+touch -d "2026-05-17 10:00" <repo>/docs/superpowers/specs/2026-05-17-decoy.md
 ```
 
 The decoy's mtime is set to be later than the existing spec.
@@ -846,7 +848,7 @@ PASS if both observations match. FAIL otherwise — fix the spec-discovery secti
 - [ ] **Step 7: Delete the decoy**
 
 ```bash
-rm /c/Users/krzys/claude-personal-plugin/docs/superpowers/specs/2026-05-17-decoy.md
+rm <repo>/docs/superpowers/specs/2026-05-17-decoy.md
 ```
 
 ---
@@ -860,7 +862,7 @@ rm /c/Users/krzys/claude-personal-plugin/docs/superpowers/specs/2026-05-17-decoy
 The plugin's own design doc, fresh (before any review), is rich enough. Reset to the `7800647` commit on a throwaway branch:
 
 ```bash
-cd /c/Users/krzys/claude-personal-plugin
+cd <repo>
 git checkout -b spec-cap-test 7800647
 ```
 
@@ -884,7 +886,7 @@ PASS if the crossing note appears exactly once AND the loop terminates before ro
 - [ ] **Step 5: Discard the throwaway branch**
 
 ```bash
-cd /c/Users/krzys/claude-personal-plugin
+cd <repo>
 git checkout master
 git branch -D spec-cap-test
 ```
@@ -896,7 +898,7 @@ git branch -D spec-cap-test
 - [ ] **Step 1: Verify the plan and all artifacts are committed**
 
 ```bash
-cd /c/Users/krzys/claude-personal-plugin
+cd <repo>
 git status
 ```
 Expected: clean working tree.
@@ -904,7 +906,7 @@ Expected: clean working tree.
 - [ ] **Step 2: Tag the v0.1.0 release**
 
 ```bash
-cd /c/Users/krzys/claude-personal-plugin
+cd <repo>
 git tag -a v0.1.0 -m "v0.1.0 — /spec-review skill, first usable version"
 ```
 
