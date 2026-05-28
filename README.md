@@ -1,15 +1,14 @@
 # claude-personal-plugin
 
-Personal Claude Code tooling — a marketplace, plugins, and optional
-user-level slash commands that follow the user across every project on
-a given machine.
+Personal Claude Code tooling — a marketplace and plugins that follow you
+across every project on a given machine.
 
 ## What's in here
 
 ```
 .claude-plugin/marketplace.json       Claude Code marketplace manifest
-plugins/spec-review/                  the spec-review plugin (skill + command)
-user-commands/spec-review.md          optional user-level slash command
+plugins/spec-review/                  the spec-review plugin (skill)
+plugins/plan-review/                  the plan-review plugin (skill)
 docs/superpowers/specs/               design specs
 docs/superpowers/plans/               implementation plans
 ```
@@ -24,9 +23,19 @@ weak ones, commits each round, and stops on a clean verdict or a safety
 cap. Designed by dogfooding the loop on its own spec — see
 `docs/superpowers/specs/2026-05-16-spec-review-skill-design.md`.
 
+### `plan-review`
+
+The same loop applied to implementation plans instead of specs. Reads
+the most recent plan under `docs/superpowers/plans/` (or a path you
+pass), dispatches a reviewer tuned for the plan genre — sequencing,
+dependencies between steps, actionable tasks, verification guidance —
+applies the catches you agree with, disputes weak ones, commits each
+round, and stops on a clean verdict or a safety cap. Use it after the
+`writing-plans` skill writes a plan.
+
 ## Install
 
-Three steps. Step 3 is optional but recommended.
+Two steps.
 
 ### 1. Register the marketplace
 
@@ -41,64 +50,37 @@ form (`/plugin marketplace add https://github.com/krzyssikora/claude-personal-pl
 also works. To register from a local clone instead, pass the clone's
 absolute path in place of the shorthand.
 
-### 2. Install the plugin
+### 2. Install the plugin(s)
 
 ```
 /plugin install spec-review@claude-personal-plugin
+/plugin install plan-review@claude-personal-plugin
 ```
 
-Confirm by running `/reload-plugins` and then `/plugin` to view the
-manager — `spec-review` should appear under the Installed tab.
+Install either or both. Confirm by running `/reload-plugins` and then
+`/plugin` to view the manager — the installed plugins should appear
+under the Installed tab.
 
-After this step, the slash command is registered as `/spec-review:run`
-(Claude Code namespaces every plugin command as
-`<plugin-name>:<command-name>`). The skill is available via the Skill
-tool as `spec-review:spec-review`.
+Each plugin ships a single skill and no command file. After install you
+run it by typing `/spec-review` or `/plan-review` (optionally with a
+path: `/spec-review path/to/spec.md`) — Claude Code exposes a plugin
+skill directly under its own name. The model can also invoke it via the
+Skill tool as `spec-review:spec-review` / `plan-review:plan-review`.
 
-Note: the command file is named `run.md` rather than `spec-review.md`
-on purpose. If a plugin's command and skill share both the plugin
-namespace and the leaf name, the Skill tool's dispatcher routes
+Why no command file: the skill is already invocable as `/spec-review`, so
+a command file would be redundant — and a plugin command that shares its
+skill's leaf name makes the Skill tool route
 `Skill("spec-review:spec-review")` to the command stub instead of the
-skill body, leaving the agent with no skill content. Keeping the
-command's leaf name distinct (`run`) avoids the collision.
-
-### 3. (Optional) Install the user-level shortcut for clean `/spec-review`
-
-Plugin commands are always namespaced. To get `/spec-review` directly,
-copy the user-level shortcut into your `~/.claude/commands/`:
-
-**Windows (PowerShell):**
-
-```
-New-Item -ItemType Directory -Force -Path $HOME\.claude\commands | Out-Null
-Copy-Item user-commands\spec-review.md $HOME\.claude\commands\spec-review.md
-```
-
-**Bash / macOS / Linux:**
-
-```
-mkdir -p ~/.claude/commands
-cp user-commands/spec-review.md ~/.claude/commands/spec-review.md
-```
-
-(The `~/.claude/commands/` directory is created on demand; if you've
-never installed a user-level slash command before, it won't exist.)
-
-After this, `/spec-review` (un-namespaced) is registered as a user-level
-slash command and forwards `$ARGUMENTS` to the plugin's
-`spec-review:spec-review` skill via the Skill tool. The skill itself
-still lives in the plugin — the user-level file is just a thin shim.
-
-`/reload-plugins` in any open session picks up the new command.
+skill body. Shipping the skill alone gives the clean slash command and
+sidesteps that collision. (Don't re-add a same-named command.)
 
 ## Verifying the install
 
 In a fresh Claude Code session:
 
-- `/plugin` shows `spec-review` under the Installed tab with no errors.
-- Typing `/spec-review:run` reaches the plugin's slash command body,
-  which then invokes the skill.
-- If you did Step 3, `/spec-review` works the same way.
+- `/plugin` shows the installed plugins (`spec-review`, `plan-review`)
+  under the Installed tab with no errors.
+- Typing `/spec-review` or `/plan-review` runs the skill.
 
 ## Smoke test without installing
 
@@ -109,8 +91,8 @@ git clone https://github.com/krzyssikora/claude-personal-plugin.git
 claude --plugin-dir ./claude-personal-plugin
 ```
 
-Loads the plugin only for that Claude Code session — no marketplace,
-no user-level shortcut. Useful when iterating on the plugin during
+Loads the plugins only for that Claude Code session — no marketplace
+registration needed. Useful when iterating on a plugin during
 development. `--plugin-dir` accepts either a directory or a `.zip`
 archive (Claude Code v2.1.128+) and may be repeated to load multiple
 plugins.
@@ -118,7 +100,6 @@ plugins.
 ## Repo layout reminder
 
 This repo is *both* a Claude Code marketplace (`claude-personal-plugin`)
-and the source-of-truth for one plugin (`spec-review`) inside it.
-Additional plugins can be added later as sibling subdirectories under
-`plugins/`. Additional user-level slash commands can be added as
-sibling files under `user-commands/`.
+and the source-of-truth for the plugins (`spec-review`, `plan-review`)
+inside it. Additional plugins can be added later as sibling
+subdirectories under `plugins/`.

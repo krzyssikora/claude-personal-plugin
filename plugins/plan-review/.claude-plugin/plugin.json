@@ -1,0 +1,9 @@
+{
+  "name": "plan-review",
+  "version": "0.1.0",
+  "description": "Iteratively review an implementation plan via a fresh-context reviewer subagent until the loop reaches a clean verdict or a safety cap fires.",
+  "author": {
+    "name": "Krzysztof Sikora",
+    "email": "krzyssikora@gmail.com"
+  }
+}
